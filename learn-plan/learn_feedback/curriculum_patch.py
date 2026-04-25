@@ -12,6 +12,114 @@ from learn_workflow.workflow_store import resolve_learning_root
 
 
 PATCH_QUEUE_SCHEMA = "learn-plan.curriculum-patch-queue.v1"
+PENDING_PATCH_STATUSES = {"proposed", "pending", "pending-evidence"}
+APPROVED_PATCH_STATUSES = {"approved"}
+CONSUMABLE_PATCH_STATUSES = PENDING_PATCH_STATUSES | APPROVED_PATCH_STATUSES
+TERMINAL_PATCH_STATUSES = {"rejected", "applied"}
+
+
+def patch_status(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def pending_patch_items(queue: dict[str, Any]) -> list[dict[str, Any]]:
+    patches = [item for item in (queue.get("patches") or []) if isinstance(item, dict)]
+    return [item for item in patches if patch_status(item.get("status")) in PENDING_PATCH_STATUSES]
+
+
+def approved_patch_items(queue: dict[str, Any]) -> list[dict[str, Any]]:
+    patches = [item for item in (queue.get("patches") or []) if isinstance(item, dict)]
+    return [item for item in patches if patch_status(item.get("status")) in APPROVED_PATCH_STATUSES]
+
+
+def apply_approval_patch_decisions(queue: dict[str, Any], approval_state: dict[str, Any] | None) -> tuple[dict[str, list[str]] | dict[str, Any], dict[str, list[str]]]:
+    updated = deepcopy(queue) if isinstance(queue, dict) else default_patch_queue()
+    normalized_approval = approval_state if isinstance(approval_state, dict) else {}
+    approved_ids = set(normalize_string_list(normalized_approval.get("approved_patch_ids") or []))
+    rejected_ids = set(normalize_string_list(normalized_approval.get("rejected_patch_ids") or []))
+    patches = [item for item in (updated.get("patches") or []) if isinstance(item, dict)]
+    if not approved_ids and not rejected_ids:
+        legacy_approval_ready = (
+            bool(normalized_approval.get("ready_for_execution"))
+            and str(normalized_approval.get("approval_status") or normalized_approval.get("status") or "").strip().lower() == "approved"
+            and not normalize_string_list(normalized_approval.get("pending_decisions") or [])
+        )
+        if legacy_approval_ready:
+            approved_ids = {
+                str(item.get("id") or "").strip()
+                for item in patches
+                if str(item.get("status") or "").strip() in PENDING_PATCH_STATUSES and str(item.get("id") or "").strip()
+            }
+        if not approved_ids:
+            return _apply_patch_queue_envelope(updated), {"approved": [], "rejected": []}
+
+    decisions = {"approved": [], "rejected": []}
+    next_patches: list[dict[str, Any]] = []
+    for item in patches:
+        patch_id = str(item.get("id") or "").strip()
+        status = patch_status(item.get("status"))
+        next_status = status
+        if patch_id and patch_id in approved_ids and status not in TERMINAL_PATCH_STATUSES:
+            next_status = "approved"
+        elif patch_id and patch_id in rejected_ids and status not in TERMINAL_PATCH_STATUSES:
+            next_status = "rejected"
+        if next_status == status:
+            next_patches.append(item)
+            continue
+
+        evidence = normalize_string_list(list(item.get("evidence") or []) + [f"approval_patch_decision={patch_id}:{next_status}"])
+        traceability = list(item.get("traceability") or [])
+        traceability.append(
+            build_traceability_entry(
+                kind="approval",
+                ref=patch_id or str(item.get("topic") or "patch"),
+                title=item.get("topic") or "curriculum patch",
+                detail=item.get("patch_type") or "feedback",
+                stage="approval",
+                status=next_status,
+            )
+        )
+        decided_item = apply_quality_envelope(
+            {
+                **deepcopy(item),
+                "status": next_status,
+                "application_policy": "ready-to-apply" if next_status == "approved" else "rejected-by-approval",
+            },
+            stage="feedback",
+            generator="approval-patch-decision",
+            evidence=evidence,
+            confidence=item.get("confidence"),
+            quality_review=item.get("quality_review"),
+            generation_trace={
+                **(item.get("generation_trace") if isinstance(item.get("generation_trace"), dict) else {}),
+                "stage": "approval",
+                "generator": "approval-patch-decision",
+                "status": next_status,
+            },
+            traceability=traceability,
+        )
+        next_patches.append(decided_item)
+        decisions[next_status].append(patch_id)
+    updated["patches"] = next_patches
+    return _apply_patch_queue_envelope(updated), decisions
+
+
+def consume_approved_patches(queue: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    updated = deepcopy(queue) if isinstance(queue, dict) else default_patch_queue()
+    patches = [item for item in (updated.get("patches") or []) if isinstance(item, dict)]
+    consumed: list[dict[str, Any]] = []
+    next_patches: list[dict[str, Any]] = []
+    for item in patches:
+        status = patch_status(item.get("status"))
+        if status in APPROVED_PATCH_STATUSES:
+            applied = deepcopy(item)
+            applied["status"] = "applied"
+            consumed.append(applied)
+            next_patches.append(applied)
+        else:
+            next_patches.append(item)
+    updated["patches"] = next_patches
+    return _apply_patch_queue_envelope(updated), consumed
 
 
 def _sorted_patch_items(queue: dict[str, Any]) -> list[dict[str, Any]]:
@@ -154,6 +262,14 @@ def should_propose_patch(summary: dict[str, Any], update_type: str) -> bool:
 
 def validate_patch_proposal(patch: dict[str, Any]) -> list[str]:
     issues: list[str] = []
+    quality_review = patch.get("quality_review") if isinstance(patch.get("quality_review"), dict) else {}
+    generation_trace = patch.get("generation_trace") if isinstance(patch.get("generation_trace"), dict) else {}
+    if not quality_review.get("valid"):
+        issues.append("patch.quality_review_invalid")
+    if not generation_trace:
+        issues.append("patch.generation_trace_missing")
+    if not normalize_string_list(patch.get("traceability") or []):
+        issues.append("patch.traceability_missing")
     if not patch.get("evidence"):
         issues.append("patch.evidence_missing")
     if patch.get("application_policy") != "pending-user-approval":
@@ -264,7 +380,7 @@ def merge_patch(queue: dict[str, Any], patch: dict[str, Any] | None) -> dict[str
     replaced = False
     next_patches: list[dict[str, Any]] = []
     for item in patches:
-        if isinstance(item, dict) and item.get("id") == patch_id and item.get("status") in {"proposed", "pending", "pending-evidence"}:
+        if isinstance(item, dict) and item.get("id") == patch_id and item.get("status") in PENDING_PATCH_STATUSES:
             next_patches.append(patch)
             replaced = True
         else:
@@ -279,17 +395,55 @@ def write_patch_queue(path: Path, queue: dict[str, Any]) -> None:
     write_json(path, queue)
 
 
-def update_patch_queue_file(plan_path: Path, summary: dict[str, Any], session_facts: dict[str, Any], *, update_type: str) -> dict[str, Any]:
+def update_patch_queue_file(
+    plan_path: Path,
+    summary: dict[str, Any],
+    session_facts: dict[str, Any],
+    *,
+    update_type: str,
+    patch_candidate: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     path = patch_queue_path_for_plan(plan_path)
     queue = load_patch_queue(path)
-    patch = build_patch_proposal(summary, session_facts, update_type=update_type)
+    if patch_candidate is None:
+        write_patch_queue(path, queue)
+        return {"path": str(path), "patch": None, "queue": queue}
+    patch = deepcopy(patch_candidate)
+    quality_issues = validate_patch_proposal(patch)
+    if quality_issues:
+        patch = apply_quality_envelope(
+            patch,
+            stage="feedback",
+            generator="curriculum-patch-candidate-gate",
+            evidence=normalize_string_list(patch.get("evidence") or []),
+            confidence=patch.get("confidence"),
+            quality_review={
+                "reviewer": "curriculum-patch-candidate-gate",
+                "valid": False,
+                "issues": quality_issues,
+                "warnings": [],
+                "confidence": patch.get("confidence"),
+                "evidence_adequacy": "sufficient" if patch.get("evidence") else "partial",
+                "verdict": "needs-revision",
+            },
+            generation_trace={
+                **(patch.get("generation_trace") if isinstance(patch.get("generation_trace"), dict) else {}),
+                "stage": "feedback",
+                "generator": "curriculum-patch-candidate-gate",
+                "status": "rejected",
+            },
+            traceability=list(patch.get("traceability") or []),
+        )
+        write_patch_queue(path, queue)
+        return {"path": str(path), "patch": patch, "queue": queue, "quality_issues": quality_issues}
     updated = merge_patch(queue, patch)
     write_patch_queue(path, updated)
-    return {"path": str(path), "patch": patch, "queue": updated}
+    return {"path": str(path), "patch": patch, "queue": updated, "quality_issues": []}
 
 
 __all__ = [
     "PATCH_QUEUE_SCHEMA",
+    "apply_approval_patch_decisions",
     "build_patch_proposal",
     "default_patch_queue",
     "load_patch_queue",

@@ -3,6 +3,12 @@
 本文档定义整个 `/learn-plan` skill 簇的**稳定数据契约**。它不是实现细节文档，而是各脚本、skill prompt 与后续模块拆分时都要对齐的 schema 约束。
 
 相关文档：
+- 顶层 skill 协议：`../SKILL.md`
+- clarification 阶段：`./clarification-stage.md`
+- research 阶段：`./research-stage.md`
+- diagnostic 阶段：`./diagnostic-stage.md`
+- approval 阶段：`./approval-stage.md`
+- finalize 阶段：`./finalize-stage.md`
 - 架构总览：`../WORKFLOW_DESIGN.md`
 - 状态文件所有权：`./state-files.md`
 - 运行时兼容边界：`./runtime-compatibility.md`
@@ -80,7 +86,7 @@
 
 适用范围：
 - workflow 中间态：`clarification.json`、`research.json`、`diagnostic.json`、`approval.json`
-- runtime/session 产物：`questions.json`、`lesson.md` 对应的结构化 lesson payload
+- runtime/session 产物：`questions.json`、`learn-today-YYYY-MM-DD.md` 对应的结构化 lesson payload
 - feedback 产物：`learner_model.json`、`curriculum_patch_queue.json` 的根对象，以及它们内部的 `evidence_log`、`patches`
 
 语义约定：
@@ -109,6 +115,8 @@
 
 ### 3.2 建议结构
 
+`workflow_type` 表示 intake 阶段判定出的首次路由类型，不表示当前所处阶段。它在首次写入后应保持冻结，后续 workflow 推进只更新 `blocking_stage / recommended_mode / next_action`，不应随当前 gate 重算。
+
 ```json
 {
   "contract_version": "learn-plan.workflow.v2",
@@ -121,6 +129,15 @@
   "next_action": "switch_to:research-report",
   "missing_requirements": [],
   "quality_issues": [],
+  "stage_entry_contract": {},
+  "stage_exit_contract": {
+    "required_artifacts": [],
+    "required_values": [],
+    "user_visible_next_step": ""
+  },
+  "stage_exit_missing_values": [],
+  "stage_exit_required_artifacts": [],
+  "stage_exit_user_visible_next_step": "",
   "artifacts": {
     "clarification_json": "<root>/.learn-workflow/clarification.json",
     "research_json": "<root>/.learn-workflow/research.json",
@@ -137,7 +154,10 @@
 
 ### 3.3 必需语义
 
-- `blocking_stage` 只能取：`clarification | research | diagnostic | approval | ready`
+- `blocking_stage` 只能取：`clarification | research | diagnostic | approval | planning | ready`
+- 其中 `planning` 表示 formal plan 尚未可写，但前序 gate 已基本满足、系统正在等待或生成 `plan_candidate`；它是 `finalize` 前的过渡态，不表示 workflow 回退到更早阶段。
+- `stage_exit_contract` 必须展示当前阻塞阶段的退出契约，包括 required artifacts、required values 与用户可见下一步。
+- `stage_exit_missing_values` 只能列当前阶段缺口；未来阶段缺口应放入 reference missing，不应用来诱导当前阶段手补未来 artifact。
 - `next_action` 只能取：
   - `switch_to:draft`
   - `switch_to:research-report`
@@ -183,7 +203,9 @@
     "mastery_preferences": {
       "preferred_checks": [],
       "acceptable_evidence": [],
-      "assessment_depth_preference": "simple|deep|undecided"
+      "max_assessment_rounds_preference": 1,
+      "questions_per_round_preference": 5,
+      "question_mix_preference": []
     },
     "existing_materials": [],
     "non_goals": [],
@@ -203,6 +225,47 @@
     "practice_style": [],
     "delivery_preference": [],
     "pending_items": []
+  },
+  "consultation_state": {
+    "status": "needs-more|confirmed",
+    "current_topic_id": "learning_purpose",
+    "topic_order": ["learning_purpose", "exam_or_job_target", "success_criteria", "current_level", "constraints", "teaching_preference", "practice_preference", "materials", "assessment_scope", "non_goals"],
+    "topics": [
+      {
+        "id": "learning_purpose",
+        "label": "学习目的",
+        "status": "not-started|in-progress|resolved|deferred",
+        "required": true,
+        "exit_criteria": [],
+        "confirmed_values": {},
+        "open_questions": [],
+        "assumptions": [],
+        "ambiguities": [],
+        "evidence": [],
+        "last_user_answer_summary": ""
+      }
+    ],
+    "thread": [
+      {
+        "turn_id": "",
+        "topic_id": "",
+        "question": "",
+        "user_answer_summary": "",
+        "interpretation": "",
+        "status": "resolved|ambiguous|needs-follow-up|assumed|deferred",
+        "next_question": ""
+      }
+    ],
+    "open_questions": [],
+    "assumptions": []
+  },
+  "language_policy": {
+    "user_facing_language": "zh-CN|en|auto",
+    "detected_from": "current-conversation|explicit-user-choice|fallback",
+    "localization_required": true,
+    "source_language_policy": "sources-may-be-original-language",
+    "quote_policy": "preserve-source-quotes-with-local-explanation",
+    "code_identifier_policy": "preserve-code-identifiers"
   }
 }
 ```
@@ -212,15 +275,36 @@
 - `questionnaire.topic` 非空
 - `questionnaire.goal` 非空
 - `questionnaire.success_criteria` 非空
-- `questionnaire.current_level_self_report` 非空
-- `questionnaire.time_constraints.frequency` 或 `session_length` 至少一项非空
-- `questionnaire.mastery_preferences.assessment_depth_preference` 必须为 `simple` 或 `deep`，不能停留在 `undecided`
-- `preference_state.pending_items` 为空
+- `questionnaire.current_level_self_report` 非空，或 `consultation_state.topics[current_level]` 明确 deferred 到 diagnostic
+- `questionnaire.time_constraints.frequency` 或 `session_length` 至少一项非空，或有明确 routine/deadline 约束
+- `questionnaire.mastery_preferences.max_assessment_rounds_preference >= 1`
+- `questionnaire.mastery_preferences.questions_per_round_preference >= 1`
+- `consultation_state` 存在并包含 `current_topic_id`、`topics`、`topic_order`
+- required topics 必须是 `resolved` 或合规 `deferred`，否则必须保留当前主题的 follow-up question
+- 若存在 `preference_state`，则 `preference_state.pending_items` 在归一化后应为空，或只剩非阻塞/后置项
+- `preference_state` 本身可为空；此时 runtime 从 `user_model` / `planning_state.preference_status` 回填兼容视图
 - `clarification_state.open_questions` 为空或只剩非阻塞项
 
+兼容口径：
+- gate / reviewer 最终认定的 canonical 字段是：
+  - `questionnaire.success_criteria`
+  - `questionnaire.time_constraints`
+  - `questionnaire.mastery_preferences.max_assessment_rounds_preference`
+  - `questionnaire.mastery_preferences.questions_per_round_preference`
+  - `clarification_state.open_questions`
+  - `preference_state.pending_items`
+- 兼容输入字段可以被归一化回上述 canonical 视图，包括但不限于：
+  - `clarification_state.success_criteria.confirmed`
+  - `schedule.time_constraints_confirmed`
+  - `clarification_state.constraints_confirmed`
+  - `user_model.constraints`
+- `clarification_state.open_questions` 允许保存 deferred / non-blocking 项，但 gate 只消费 blocking 子集；明确 deferred_to_diagnostic 或已 resolved 的问题不应继续阻塞 clarification。
+- `preference_state.pending_items` 也允许暂存偏好细化项；当 `preference_state.status` 已是 `confirmed` 或 `partially_confirmed` 时，只有真正阻塞当前阶段的问题才应继续保留在 blocking 子集里。
+
 补充说明：
-- `/learn-plan` 必须在 clarification 阶段显式让用户选择“简单测评 / 深度测评”。
-- 若该字段仍为 `undecided`，workflow 必须继续停留在 clarification，不得默认走 simple。
+- `/learn-plan` 必须在 clarification 阶段显式确认“最多接受几轮起始测评、每轮最多接受多少题”。
+- 默认先按“每轮总题数”理解；只有用户主动在意题型比例时，再额外记录 `question_mix_preference`。
+- 若上述预算仍未确认，workflow 必须继续停留在 clarification，不得默认进入任意诊断预算或轮次结构。
 
 ---
 
@@ -244,7 +328,21 @@
   },
   "research_report": {
     "report_status": "missing|completed",
+    "report_type": "capability-level-report",
     "goal_level_definition": "",
+    "required_level_definition": "",
+    "goal_target_band": "",
+    "must_master_core": [],
+    "evidence_expectations": [],
+    "research_brief": "",
+    "user_facing_report": {
+      "format": "html",
+      "language": "zh-CN|en",
+      "title": "",
+      "summary": [],
+      "html": "",
+      "sections": []
+    },
     "capability_metrics": [
       {
         "id": "cap-001",
@@ -272,7 +370,25 @@
     "candidate_materials": [],
     "selection_rationale": [],
     "evidence_summary": [],
-    "open_risks": []
+    "open_risks": [],
+    "diagnostic_scope": {
+      "target_goal_band": "",
+      "target_capability_ids": [],
+      "target_capabilities": [],
+      "scope_rationale": [],
+      "evidence_expectations": [],
+      "scoring_dimensions": [],
+      "gap_judgement_basis": [],
+      "non_priority_items": []
+    }
+  },
+  "language_policy": {
+    "user_facing_language": "zh-CN|en|auto",
+    "detected_from": "current-conversation|explicit-user-choice|fallback",
+    "localization_required": true,
+    "source_language_policy": "sources-may-be-original-language",
+    "quote_policy": "preserve-source-quotes-with-local-explanation",
+    "code_identifier_policy": "preserve-code-identifiers"
   }
 }
 ```
@@ -281,12 +397,26 @@
 
 - 若需要 research：`research_plan.status` 必须为 `approved` 或 `completed`
 - `research_report.report_status = completed`
+- `research_brief` 非空
+- `goal_target_band` 非空
+- `required_level_definition` 非空
+- `must_master_core` 非空
+- `evidence_expectations` 非空
+- `user_facing_report.format = html`
+- `user_facing_report.html` 非空，或结构化字段完整到可由 deterministic renderer 生成 HTML
+- `user_facing_report.summary` 非空，且内容是能力要求与达标水平报告摘要，不是学习路线安排
+- `diagnostic_scope.target_capability_ids` 非空
+- `diagnostic_scope.scoring_dimensions` 非空
+- `diagnostic_scope.gap_judgement_basis` 非空
 - `capability_metrics` 非空
 - 每个主线能力项至少有：
   - `observable_behaviors`
+  - `quantitative_indicators`
   - `diagnostic_methods`
   - `learning_evidence`
+  - `source_evidence`
 - 有 `source_evidence` 或 `evidence_summary`
+- `language_policy.user_facing_language` 非空；用户可见报告语言必须遵守该策略，代码标识符、命令、路径和原文引用可保留原语言
 
 ---
 
@@ -304,9 +434,9 @@
   "diagnostic_plan": {
     "target_capability_ids": [],
     "test_strategy": "口头解释|选择判断|小代码题|小项目|阅读复盘|混合",
-    "assessment_depth": "simple|deep",
     "round_index": 1,
     "max_rounds": 1,
+    "questions_per_round": 5,
     "delivery": "web-session",
     "assessment_kind": "initial-test",
     "session_intent": "assessment",
@@ -357,9 +487,9 @@
   },
   "diagnostic_profile": {
     "status": "in-progress|validated",
-    "assessment_depth": "simple|deep",
     "round_index": 1,
     "max_rounds": 1,
+    "questions_per_round": 5,
     "baseline_level": "",
     "dimensions": [],
     "observed_strengths": [],
@@ -374,21 +504,23 @@
 ### 6.3 gate 最低要求
 
 - `diagnostic_items` 非空
-- `diagnostic_plan.assessment_depth` 非空
 - `diagnostic_plan.round_index >= 1`
 - `diagnostic_plan.max_rounds >= diagnostic_plan.round_index`
+- `diagnostic_plan.questions_per_round >= 1`
 - `diagnostic_plan.delivery = web-session`
+- 新链路以 `round_index / max_rounds / questions_per_round / follow_up_needed / stop_reason` 为唯一诊断预算与推进字段，不再要求 `assessment_depth`
 - `diagnostic_plan.assessment_kind = initial-test`，历史 `plan-diagnostic` 仍应兼容读取
 - `diagnostic_plan.session_intent = assessment`，历史 `plan-diagnostic` 仍应兼容读取
 - `diagnostic_result.status = evaluated`
 - `capability_assessment` 非空
 - `recommended_entry_level` 非空
 - `confidence` 非空
-- 若 `assessment_depth = deep` 且证据仍不足，应显式写出 `follow_up_needed` 与 `stop_reason`
+- 应显式写出 `follow_up_needed` 与 `stop_reason`
 
 补充说明：
 - diagnostic 题目应通过网页 session 四件套交付，用户先作答，再由 `/learn-plan` 诊断语义消费结果。
 - 新生成的起始测试应写为 `assessment_kind = initial-test`、`session_intent = assessment`，并保留 `plan_execution_mode = diagnostic`；历史 `plan-diagnostic` 只读兼容。
+- `questions_per_round` 默认表示“每轮总题数”，不是分题型配额；只有用户明确提出题型比例偏好时，才进一步细化。
 - 不得把前置起点诊断改写成普通 `stage-test` 结论；虽然更新入口统一走 `/learn-test-update`，但输出语义仍应是“起步层级判断”，不是阶段通过/回退。
 
 ---
@@ -408,6 +540,8 @@
     "approval_status": "draft|needs-revision|approved",
     "ready_for_execution": false,
     "approved_scope": [],
+    "approved_patch_ids": [],
+    "rejected_patch_ids": [],
     "pending_decisions": [],
     "requested_changes": [],
     "accepted_tradeoffs": [],
@@ -418,6 +552,10 @@
   }
 }
 ```
+
+补充说明：
+- `approved_patch_ids` / `rejected_patch_ids` 用于把 approval 阶段对 `curriculum_patch_queue.json` 中 patch 的决策显式写回 workflow。
+- `approved_patch_ids` 对应的 patch 在 finalize 成功写正式计划后转为 `applied`；`rejected_patch_ids` 对应 patch 进入终态，不再阻塞 gate。
 
 ### 7.3 gate 最低要求
 
@@ -568,7 +706,7 @@
 
 ### 10.1 作用
 
-保存材料索引、角色划分、segment 信息与缓存状态。它既服务 planning，也服务 runtime grounding。
+保存材料索引、角色划分、segment 信息与缓存状态。它既服务 planning，也服务 runtime grounding。当前实现以 `entries` 为 canonical 根数组，同时兼容读取 legacy `items` / `materials`。
 
 ### 10.2 关键字段
 
@@ -577,7 +715,7 @@
   "topic": "",
   "family": "linux|llm-app|backend|frontend|database|algorithm|math|english|general-cs",
   "generated_at": "",
-  "items": [
+  "entries": [
     {
       "id": "",
       "title": "",
@@ -610,13 +748,15 @@
 
 ### 10.3 最低兼容要求
 
-- 保留现有 runtime 依赖的 `items` 级材料列表语义
+- `entries` 是当前 canonical 根数组；legacy `items` / `materials` 只读兼容
 - 允许逐步增强 `segments`、`source_key_points` 等字段
+- 下载器只允许维护缓存相关字段，不得改写 planner 语义字段
 - 下载器必须继续维护：
   - `cache_status`
   - `local_path`
   - `cached_at`
   - `last_attempt`
+- `cache_note`、`exists_locally`、`local_artifact`、`downloaded_at` 仅作 legacy 只读兼容，不再作为 canonical 缓存字段
 
 ---
 
@@ -705,6 +845,9 @@
 - 对应 capability / mastery target
 - 对应 material segment / source excerpt
 - 明确来源标记或 fallback 标记
+- 对应 `lesson_focus_points`
+- 对应 `project_tasks` / `project_blockers`
+- 对应 `review_targets`
 
 当前 runtime 还会写入 `question_quality`，至少覆盖：
 - `valid`
@@ -712,6 +855,19 @@
 - `warnings`
 - `fallback_count`
 - `source_markers`
+
+`questions.json` 的 bootstrap hard requirement 除上述最低结构外，还要求顶层显式保留：
+- `session_intent`
+- `assessment_kind`
+
+Today session 还应允许扩展以下 advisory 字段；它们不阻断 `questions.json` 生成，但 runtime/update 已消费：
+- `plan_source.today_teaching_brief`
+- `plan_source.lesson_review`
+- `plan_source.question_review`
+- `plan_source.lesson_focus_points`
+- `plan_source.project_tasks`
+- `plan_source.project_blockers`
+- `plan_source.review_targets`
 
 ---
 
@@ -748,6 +904,20 @@
 }
 ```
 
+`progress.json` 的 bootstrap hard requirement 至少包括：
+- `session.type`
+- `session.intent`
+- `session.assessment_kind`
+- `session.plan_execution_mode`
+- `session.test_mode`
+- `session.status`
+- `session.started_at`
+- `session.finished_at`
+- `session.plan_path`
+- `summary.total`
+- `summary.attempted`
+- `summary.correct`
+
 ### 13.3 question 级要求
 
 每个 `questions.<id>` 至少包含：
@@ -755,6 +925,21 @@
 - `history`
 
 代码题历史保留代码与运行结果；概念题历史只保留正确/错误与时间，不默认回填历史答案到页面。
+
+Today session 的 `context` 应允许扩展以下字段：
+- `today_teaching_brief`
+- `lesson_review`
+- `question_review`
+- `lesson_focus_points`
+- `project_tasks`
+- `project_blockers`
+- `review_targets`
+- `lesson_path`
+- `daily_plan_artifact_path`
+
+其中：
+- `lesson_path` 与 `daily_plan_artifact_path` 在 today 主路径下应指向同一个 canonical lesson 文件。
+- `lesson_review` / `question_review` 为 advisory reviewer 输出，只提供问题列表与建议，不替代 hard gate。
 
 ---
 

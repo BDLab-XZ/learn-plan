@@ -23,22 +23,24 @@ def render_capability_model_section(profile: dict[str, Any]) -> str:
     strengths = list(diagnostic_profile.get("observed_strengths") or [])
     weaknesses = list(diagnostic_profile.get("observed_weaknesses") or [])
     baseline = diagnostic_profile.get("baseline_level")
-    entry_level = diagnostic_profile.get("recommended_entry_level") or profile.get("level")
+    entry_level = diagnostic_profile.get("recommended_entry_level")
     confidence = diagnostic_profile.get("confidence")
-    assessment_depth = diagnostic_profile.get("assessment_depth")
     round_index = diagnostic_profile.get("round_index")
     max_rounds = diagnostic_profile.get("max_rounds")
+    questions_per_round = diagnostic_profile.get("questions_per_round")
     follow_up_needed = diagnostic_profile.get("follow_up_needed")
     stop_reason = diagnostic_profile.get("stop_reason")
 
     lines = [
         f"- 当前 workflow 状态：{planning_state.get('plan_status')}",
-        f"- 起点判断：建议从 {entry_level} 开始",
+        (f"- 起点判断：建议从 {entry_level} 开始" if entry_level else "- 起点判断：待完成诊断后确认"),
     ]
-    if assessment_depth:
-        lines.append(f"- 测评深度：{assessment_depth}")
+    if max_rounds:
+        lines.append(f"- 诊断预算：最多 {max_rounds} 轮")
+    if questions_per_round:
+        lines.append(f"- 每轮题量：{questions_per_round}")
     if round_index:
-        lines.append(f"- 诊断轮次：{round_index} / {max_rounds}")
+        lines.append(f"- 当前轮次：第 {round_index} 轮 / 共 {max_rounds} 轮")
     if follow_up_needed is not None:
         lines.append(f"- 是否需要追问轮次：{follow_up_needed}")
     if stop_reason:

@@ -874,6 +874,7 @@ def make_code_question(
         "title": title,
         "prompt": prompt,
         "description": prompt,
+        "explanation": "评分时要同时看：是否写出正确结果、能否解释关键边界、以及结果如何影响下一轮学习入口判断。",
         "function_name": function_name,
         "params": params,
         "starter_code": starter_code,
@@ -1359,9 +1360,44 @@ def resolve_target_stages(plan_source: dict[str, Any]) -> list[str]:
 
 def resolve_target_clusters(plan_source: dict[str, Any]) -> list[str]:
     focus_terms = collect_focus_terms(plan_source)
+    diagnostic_blueprint = plan_source.get("diagnostic_blueprint") if isinstance(plan_source.get("diagnostic_blueprint"), dict) else {}
+    diagnostic_blueprint_basis = plan_source.get("diagnostic_blueprint_basis") if isinstance(plan_source.get("diagnostic_blueprint_basis"), dict) else {}
+    capability_ids = normalize_string_list(
+        diagnostic_blueprint.get("target_capability_ids") or diagnostic_blueprint_basis.get("target_capability_ids") or []
+    )
+    capability_cluster_mapping = {
+        "functions": "functions-foundations",
+        "function": "functions-foundations",
+        "script": "functions-foundations",
+        "debug": "exceptions-and-debugging",
+        "exception": "exceptions-and-debugging",
+        "traceback": "exceptions-and-debugging",
+        "file": "files-and-io",
+        "io": "files-and-io",
+        "pathlib": "files-pathlib-json-exceptions",
+        "json": "files-pathlib-json-exceptions",
+        "api": "files-pathlib-json-exceptions",
+        "http": "files-pathlib-json-exceptions",
+        "pandas_filter": "pandas-filtering",
+        "filter": "pandas-filtering",
+        "dataframe-filter": "pandas-filtering",
+        "pandas_groupby": "pandas-groupby-merge-reshape",
+        "groupby": "pandas-groupby-merge-reshape",
+        "merge": "pandas-groupby-merge-reshape",
+        "reshape": "pandas-groupby-merge-reshape",
+        "cleaning": "data-cleaning-and-vectorization",
+        "vectorization": "data-cleaning-and-vectorization",
+        "numpy": "data-cleaning-and-vectorization",
+    }
+    mapped_from_capabilities: list[str] = []
+    for capability_id in capability_ids:
+        lowered = capability_id.lower().replace("-", "_")
+        for needle, cluster in capability_cluster_mapping.items():
+            if needle in lowered and cluster not in mapped_from_capabilities:
+                mapped_from_capabilities.append(cluster)
     cluster_mapping = {
         "functions-foundations": ["函数", "参数", "返回值", "列表处理"],
-        "files-pathlib-json-exceptions": ["pathlib", "path", "read_text", "write_text", "json.dumps", "json.loads", "json", "try-except", "filenotfounderror", "第 10 章", "第10章"],
+        "files-pathlib-json-exceptions": ["pathlib", "path", "read_text", "write_text", "json.dumps", "json.loads", "json", "try-except", "filenotfounderror", "第 10 章", "第10章", "api", "http"],
         "files-and-io": ["文件", "文件读写", "csv"],
         "exceptions-and-debugging": ["异常", "调试", "traceback", "try", "except"],
         "pandas-filtering": ["pandas", "筛选", "dataframe", "loc"],
@@ -1371,8 +1407,10 @@ def resolve_target_clusters(plan_source: dict[str, Any]) -> list[str]:
         "pythonic-expressions": ["pythonic", "推导式", "列表推导式"],
         "generators-and-context-managers": ["生成器", "上下文管理器", "with"],
     }
-    matched: list[str] = []
+    matched: list[str] = list(mapped_from_capabilities)
     for cluster, needles in cluster_mapping.items():
+        if cluster in matched:
+            continue
         if any(term == cluster or any(needle in term for needle in needles) for term in focus_terms):
             matched.append(cluster)
     return matched
@@ -1558,18 +1596,186 @@ def is_initial_diagnostic_plan_source(plan_source: dict[str, Any]) -> bool:
     return False
 
 
+def diagnostic_repair_actions(repair_plan: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(repair_plan, dict):
+        return []
+    actions = repair_plan.get("repair_actions")
+    if not isinstance(actions, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for action in actions:
+        if not isinstance(action, dict):
+            continue
+        normalized = {
+            "action": str(action.get("action") or "").strip(),
+            "target_kind": str(action.get("target_kind") or "").strip(),
+            "target_ref": str(action.get("target_ref") or "").strip(),
+            "min_count": max(0, int(action.get("min_count") or 0)),
+            "reason": str(action.get("reason") or "").strip(),
+        }
+        if normalized["action"] and normalized["target_kind"] and normalized["target_ref"]:
+            result.append(normalized)
+    return result
+
+
+
+def diagnostic_required_primary_categories(plan_source: dict[str, Any], repair_plan: dict[str, Any] | None) -> list[str]:
+    repair_minimum_pass_shape = repair_plan.get("minimum_pass_shape") if isinstance(repair_plan, dict) and isinstance(repair_plan.get("minimum_pass_shape"), dict) else {}
+    required = normalize_string_list(repair_minimum_pass_shape.get("required_primary_categories") or [])
+    if required:
+        return required
+    defaults: list[str] = []
+    if normalize_string_list(plan_source.get("lesson_focus_points") or []):
+        defaults.append("lesson_focus_points")
+    if normalize_string_list(plan_source.get("project_tasks") or []):
+        defaults.append("project_tasks")
+    if normalize_string_list(plan_source.get("project_blockers") or []):
+        defaults.append("project_blockers")
+    if normalize_string_list(plan_source.get("review_targets") or []):
+        defaults.append("review_targets")
+    return normalize_string_list(defaults)
+
+
+
+def enrich_diagnostic_anchor(
+    item: dict[str, Any],
+    primary_category: str,
+    *,
+    basis: str = "initial-diagnostic-anchor",
+    target_capability_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    enriched = dict(item)
+    normalized_capability_ids = normalize_string_list(target_capability_ids or [])
+    enriched["source_trace"] = {
+        "basis": basis,
+        "primary_category": primary_category,
+        "question_source": "diagnostic-session-derived",
+        "target_capability_ids": normalized_capability_ids,
+    }
+    if normalized_capability_ids:
+        enriched["target_capability_ids"] = normalized_capability_ids
+    enriched["source_status"] = enriched.get("source_status") or "diagnostic-session-derived"
+    return enriched
+
+
+
+def choose_diagnostic_bank_candidates(
+    items: list[dict[str, Any]],
+    *,
+    role_priority: list[str],
+    required_clusters: list[str],
+    desired_count: int,
+    strict_clusters: bool = False,
+) -> list[dict[str, Any]]:
+    selected: list[dict[str, Any]] = []
+    selected_ids: set[str] = set()
+    for cluster in required_clusters:
+        for role in role_priority:
+            for item in items:
+                if len(selected) >= desired_count:
+                    return selected
+                if str(item.get("id") or "") in selected_ids:
+                    continue
+                if cluster and str(item.get("cluster") or "") != cluster:
+                    continue
+                if role and str(item.get("question_role") or "") != role:
+                    continue
+                selected.append(item)
+                selected_ids.add(str(item.get("id") or ""))
+                break
+    if len(selected) < desired_count:
+        for item in items:
+            item_id = str(item.get("id") or "")
+            if not item_id or item_id in selected_ids:
+                continue
+            if strict_clusters and required_clusters and str(item.get("cluster") or "") not in required_clusters:
+                continue
+            selected.append(item)
+            selected_ids.add(item_id)
+            if len(selected) >= desired_count:
+                break
+    return selected
+
+
+
+def build_python_diagnostic_written_anchor(
+    plan_source: dict[str, Any],
+    *,
+    stage: str,
+    cluster: str,
+    primary_category: str,
+) -> dict[str, Any]:
+    lesson_focus_points = normalize_string_list(plan_source.get("lesson_focus_points") or [])
+    project_tasks = normalize_string_list(plan_source.get("project_tasks") or [])
+    project_blockers = normalize_string_list(plan_source.get("project_blockers") or [])
+    review_targets = normalize_string_list(plan_source.get("review_targets") or [])
+    focus_text = lesson_focus_points[0] if lesson_focus_points else "Python 核心编码与表达"
+    blocker_text = project_blockers[0] if project_blockers else "当前真实起点仍需要通过 diagnostic 校准"
+    next_step_text = review_targets[0] if review_targets else "根据表现决定后续学习起步层级"
+    task_text = project_tasks[0] if project_tasks else "数据处理或脚本场景"
+    return enrich_diagnostic_anchor(
+        make_written_question(
+            "diag-open-evidence",
+            "medium",
+            "把 2~3 道代表题整理成可执行分流结论",
+            f"请不要泛化总结整套题，而是只选 2~3 道最有代表性的题来完成结构化记录：至少包含 1 道单选/判断题、1 道代码题，再补 1 道最能暴露你犹豫点的题。对每道题都按“会 / 不稳 / 不会 + 结论 + 依据 + 边界/错因 + 下一轮入口”填写，并标注这道题主要测的是概念解释、边界判断还是代码落实。然后把三道题压缩成一个唯一优先补强项，并说明它分别如何影响 python-core-coding、python-data-processing 或 python-llm-script 的起步判断。回答中还必须显式说明：为什么当前仍需要 diagnostic，而不是直接进入正式主线；为什么先让 2~3 道题暴露问题比继续盲目扩题更重要；以及你会如何根据正确性、边界条件、复杂度表达和结果解释来决定下一步。至少覆盖：{focus_text}、{blocker_text}、{next_step_text}。",
+            ["python", "diagnostic", "open-evidence", "structured-routing"],
+            reference_points=[focus_text, blocker_text, next_step_text, "单选/判断题代表例", "代码题代表例", "会/不稳/不会", "概念解释/边界判断/代码落实", "结论+依据+边界+下一轮入口", "唯一优先补强项", "是否需要继续扩题及理由"],
+            grading_hint="优先判断是否真的把 2~3 道代表题沉淀成可执行分流结论；若只是复述阶段口号、只报对错、或没有把代表题区分成会/不稳/不会，则不能视为达标。",
+            stage=stage,
+            cluster=cluster,
+            subskills=["起点判断", "证据解释", "下一步建议", "结构化分流"],
+            question_role="review_target",
+        ),
+        primary_category,
+        basis="initial-diagnostic-open-anchor",
+    )
+
+
+
 def select_python_diagnostic_questions(
     concept: list[dict[str, Any]],
     code: list[dict[str, Any]],
     plan_source: dict[str, Any],
+    repair_plan: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     focus_terms = collect_focus_terms(plan_source)
-    concept_pool = [item for item in concept if str(item.get("stage") or "") == "stage1" and str(item.get("cluster") or "") not in {"files-pathlib-json-exceptions"}]
-    code_pool = [item for item in code if str(item.get("stage") or "") == "stage1" and str(item.get("cluster") or "") not in {"files-pathlib-json-exceptions"}]
-    if not concept_pool:
-        concept_pool = [item for item in concept if str(item.get("stage") or "") == "stage1"] or list(concept)
-    if not code_pool:
-        code_pool = [item for item in code if str(item.get("stage") or "") == "stage1" and str(item.get("cluster") or "") in {"functions-foundations", "exceptions-and-debugging", "files-and-io"}] or [item for item in code if str(item.get("stage") or "") == "stage1"] or list(code)
+    diagnostic_blueprint = plan_source.get("diagnostic_blueprint") if isinstance(plan_source.get("diagnostic_blueprint"), dict) else {}
+    diagnostic_blueprint_basis = plan_source.get("diagnostic_blueprint_basis") if isinstance(plan_source.get("diagnostic_blueprint_basis"), dict) else {}
+    blueprint_capability_ids = normalize_string_list(
+        diagnostic_blueprint.get("target_capability_ids") or diagnostic_blueprint_basis.get("target_capability_ids") or []
+    )
+    lesson_focus_points = normalize_string_list(plan_source.get("lesson_focus_points") or [])
+    project_tasks = normalize_string_list(plan_source.get("project_tasks") or [])
+    project_blockers = normalize_string_list(plan_source.get("project_blockers") or [])
+    review_targets = normalize_string_list(plan_source.get("review_targets") or [])
+    resolved_target_clusters = resolve_target_clusters(plan_source)
+    if not resolved_target_clusters:
+        raise ValueError("initial diagnostic 无法从 diagnostic scope / blueprint 解析 Python target clusters")
+
+    concept_cluster_pool, concept_stage_pool = filter_python_questions_by_constraints(
+        concept,
+        target_stages=[],
+        target_clusters=resolved_target_clusters,
+    )
+    code_cluster_pool, code_stage_pool = filter_python_questions_by_constraints(
+        code,
+        target_stages=[],
+        target_clusters=resolved_target_clusters,
+    )
+    concept_pool = concept_cluster_pool or concept_stage_pool
+    code_pool = code_cluster_pool or code_stage_pool
+    if not concept_pool or not code_pool:
+        raise ValueError("initial diagnostic 的 Python 题库无法覆盖 research / diagnostic scope 指定的 clusters")
+
+    repair_actions = diagnostic_repair_actions(repair_plan)
+    minimum_pass_shape = repair_plan.get("minimum_pass_shape") if isinstance(repair_plan, dict) and isinstance(repair_plan.get("minimum_pass_shape"), dict) else {}
+    required_primary_categories = diagnostic_required_primary_categories(plan_source, repair_plan)
+    required_capability_coverage = normalize_string_list(minimum_pass_shape.get("required_capability_coverage") or blueprint_capability_ids)
+    default_required_open_question_count = 1 if blueprint_capability_ids else 0
+    default_required_code_question_count = 2 if blueprint_capability_ids else 0
+    required_open_question_count = max(0, int(minimum_pass_shape.get("required_open_question_count") or default_required_open_question_count))
+    required_code_question_count = max(0, int(minimum_pass_shape.get("required_code_question_count") or default_required_code_question_count))
 
     concept_quota = [("review", 3), ("learn", 2), ("bridge", 2), ("test", 0)]
     code_quota = [("review", 1), ("learn", 2), ("bridge", 1), ("test", 0)]
@@ -1584,34 +1790,318 @@ def select_python_diagnostic_questions(
         code_pool,
         focus_terms=focus_terms,
         preferred_difficulties=["easy", "medium"],
-        limit=4,
+        limit=max(4, required_code_question_count),
         role_quota=code_quota,
     )
+
+    anchor_concept_questions: list[dict[str, Any]] = []
+    primary_cluster = resolved_target_clusters[0]
+    primary_stage = str(next((item.get("stage") for item in concept_pool if str(item.get("stage") or "")), "foundations"))
+
+    def append_anchor(item: dict[str, Any], primary_category: str, *, target_capability_ids: list[str] | None = None) -> None:
+        anchor_concept_questions.append(
+            enrich_diagnostic_anchor(
+                item,
+                primary_category,
+                target_capability_ids=target_capability_ids,
+            )
+        )
+
+    lesson_focus_text = lesson_focus_points[0] if lesson_focus_points else "当前起点还未校准，需要先通过起始诊断确认后续学习起步层级"
+    append_anchor(
+        make_python_concept_question(
+            "diag-anchor-core",
+            "single",
+            "easy",
+            "阅读下面代码：\n\ndef dedupe_keep_order(items):\n    seen = set()\n    result = []\n    for item in items:\n        if item not in seen:\n            seen.add(item)\n            result.append(item)\n    return result\n\n如果它在 [1, 2, 1, 3] 上返回 [1, 2, 3]，但答题者说不清为什么要同时用 seen 和 result、也说不清时间复杂度，当前最准确的判断是什么？",
+            f"正确理解应当指向“目前只拿到了结果正确的表层证据，还没有拿到稳定的核心编码解释证据”。若选择错误，通常暴露的是把跑通样例误当成稳定达标，忽略了“{lesson_focus_text}”真正需要的边界与表达证据。",
+            ["python", "diagnostic", "core-coding", "code-evidence"],
+            answer=1,
+            options=[
+                "说明已经可以直接跳过 Python 基础，进入正式主线",
+                "说明结果虽然对，但核心编码能力还需要继续校准，当前证据不足以判断已经稳定达标",
+                "说明只要样例通过，边界和复杂度在面试里通常不重要",
+                "说明 diagnostic 只需要记录会不会写，不需要解释原因",
+            ],
+            stage=primary_stage,
+            cluster="functions-foundations" if "functions-foundations" in resolved_target_clusters else primary_cluster,
+            subskills=["边界条件", "复杂度表达", "实现取舍"],
+            question_role="learn",
+        ),
+        "lesson_focus_points",
+        target_capability_ids=["python-core-coding"],
+    )
+
+    project_anchor_text = project_tasks[0] if project_tasks else "根据 diagnostic 结果判断 Python 学习应从哪一层开始"
+    blocker_anchor_text = project_blockers[0] if project_blockers else "当前真实起点尚未校准，不能直接进入正式主线"
+    append_anchor(
+        make_python_concept_question(
+            "diag-anchor-data",
+            "single",
+            "easy",
+            "阅读下面代码：\n\nrows = [\n    {'status': 'paid', 'amount': 10},\n    {'status': 'paid', 'amount': None},\n    {'status': 'pending', 'amount': 5},\n]\n\ntotal = sum(row['amount'] for row in rows if row['status'] == 'paid' and row['amount'] is not None)\n\n如果答题者能说出 total == 10，但说不清为什么要先过滤 status、为什么要排除 None、结果代表什么，当前最合理的证据判断是什么？",
+            f"正确答案应落在“目前只拿到了表层数据处理结果，还没有拿到稳定的数据理解与解释证据”。因为像“{project_anchor_text}”这类任务，不只看会不会给出结果，还要看能否解释筛选顺序、缺失值处理和结果语义，以及这是否足以跨过“{blocker_anchor_text}”对应的起点门槛。",
+            ["python", "diagnostic", "data-processing", "data-evidence"],
+            answer=2,
+            options=[
+                "说明数据处理部分已经没有必要继续测",
+                "说明只要写出或算出结果，就等于具备数据处理能力",
+                "说明还需要继续校准数据处理熟练度与结果解释能力，不能直接判定已达标",
+                "说明问题只在于打字速度，与数据理解无关",
+            ],
+            stage=primary_stage,
+            cluster="pandas-filtering" if "pandas-filtering" in resolved_target_clusters else primary_cluster,
+            subskills=["先筛选再聚合", "结果语义", "数据解释"],
+            question_role="project_task",
+        ),
+        "project_tasks",
+        target_capability_ids=["python-data-processing"],
+    )
+
+    review_anchor_text = review_targets[0] if review_targets else "能否把答题表现转成起步层级与下一轮补强建议"
+    append_anchor(
+        make_python_concept_question(
+            "diag-anchor-script",
+            "single",
+            "easy",
+            "阅读下面代码：\n\ndef build_payload(name):\n    payload = {'name': name.strip()}\n    if payload['name']:\n        return {'ok': True, 'payload': payload}\n    return {'ok': False, 'payload': None}\n\n如果答题者只能大致说“这是在处理输入”，但说不清输入是什么、name.strip() 为什么要先做、两个 return 分别对应什么输出契约，当前最准确的证据判断是什么？",
+            f"正确理解应当把它记录成“短代码解释证据仍不足”。因为“{review_anchor_text}”此时优先看的不是流程放行，而是你能否把看代码这件事落实为可解释的输入输出契约、执行过程与结果说明。",
+            ["python", "diagnostic", "code-reading", "script-evidence"],
+            answer=0,
+            options=[
+                "说明短代码解释与执行过程证据仍不足，当前还需要继续校准而不是直接判定脚本能力已达标",
+                "说明只要能猜到用途，就等于已经具备稳定的 Python 阅读与表达能力",
+                "说明执行顺序和变量变化不重要，只看最终输出是否碰巧答对",
+                "说明 diagnostic 不需要关心代码阅读，只要会写函数就够了",
+            ],
+            stage=primary_stage,
+            cluster="files-pathlib-json-exceptions" if "files-pathlib-json-exceptions" in resolved_target_clusters else primary_cluster,
+            subskills=["输入输出契约", "执行顺序", "返回值判断"],
+            question_role="review_target",
+        ),
+        "review_targets",
+        target_capability_ids=["python-llm-script"],
+    )
+
+    material_alignment = plan_source.get("material_alignment") if isinstance(plan_source.get("material_alignment"), dict) else {}
+    material_alignment_status = str(material_alignment.get("status") or "missing").strip().lower()
+    if material_alignment_status != "aligned" and "project_blockers" in required_primary_categories:
+        append_anchor(
+            make_python_concept_question(
+                "diag-anchor-materials",
+                "single",
+                "easy",
+                "如果当前还没有对齐到可用材料片段，同时顾问式澄清和确认 gate 也未闭环，下面哪种最小 Python 证据采集方式最合理？",
+                "正确答案不是继续扩大题量或直接推进主线，而是先围绕一个具体 Python 小能力点收集最小可判定证据。若选错，通常暴露的是把 blocker 当成流程口号，而没有把它转成真正的 Python 证据采集策略。",
+                ["python", "diagnostic", "material-alignment", "evidence-shape"],
+                answer=1,
+                options=[
+                    "直接扩大题量，多覆盖几个 Python 主题，再看哪类题错得更多",
+                    "围绕一个具体 Python 小能力点先做 2~3 道最小任务：1 道解释题看概念解释，1 道判断题看边界判断，1 道小代码题看代码落实，再压缩成唯一优先补强项",
+                    "既然材料没对齐，就先停止所有 Python 诊断，等后面再说",
+                    "直接假设数据处理或脚本路线更重要，先跳到对应主线里再补证据",
+                ],
+                stage=primary_stage,
+                cluster=primary_cluster,
+                subskills=["边界意识", "最小探测", "证据状态判断", "任务分工"],
+                question_role="project_blocker",
+            ),
+            "project_blockers",
+        )
+
+    concept_target_count = len(anchor_concept_questions)
+    selected_concept = anchor_concept_questions[:]
+    if len(selected_concept) < concept_target_count:
+        selected_concept.extend(
+            choose_diagnostic_bank_candidates(
+                selected_concept + concept_pool,
+                role_priority=["review", "learn", "bridge", "project_task", "review_target"],
+                required_clusters=resolved_target_clusters,
+                desired_count=concept_target_count,
+                strict_clusters=True,
+            )
+        )
+    selected_concept = combine_priority_pools(selected_concept)[:concept_target_count]
+
+    anchor_code_questions: list[dict[str, Any]] = []
+
+    def append_anchor_code(item: dict[str, Any], primary_category: str) -> None:
+        anchor_code_questions.append(enrich_diagnostic_anchor(item, primary_category))
+
+    append_anchor_code(
+        make_code_question(
+            "diag-code-core",
+            "easy",
+            "用去重题判断能否进入 python-core-coding 起步路线",
+            "dedupe_keep_order",
+            ["items"],
+            "请实现函数 dedupe_keep_order(items)，输入一个列表，返回去重后仍保持首次出现顺序的新列表。这题不是普通刷题，而是专门用于判断你是否已经具备进入 python-core-coding 起步路线的最小证据。完成后，你还需要说明：如果你只能写出结果，却说不清边界条件、复杂度和为什么这样写，这会如何影响本轮对核心编码起点的判断。",
+            "def dedupe_keep_order(items):\n    pass",
+            "def dedupe_keep_order(items):\n    seen = set()\n    result = []\n    for item in items:\n        if item not in seen:\n            seen.add(item)\n            result.append(item)\n    return result",
+            [
+                {"input": [[1, 2, 1, 3, 2]], "expected": [1, 2, 3]},
+                {"input": [["a", "a", "b"]], "expected": ["a", "b"]},
+                {"input": [[]], "expected": []},
+            ],
+            ["python", "diagnostic", "core-coding", "next-step-routing"],
+            stage=primary_stage,
+            cluster="functions-foundations" if "functions-foundations" in resolved_target_clusters else primary_cluster,
+            subskills=["列表遍历", "去重", "顺序保持", "边界条件", "复杂度表达"],
+            question_role="review_target",
+        ),
+        "lesson_focus_points",
+    )
+    append_anchor_code(
+        make_code_question(
+            "diag-code-data",
+            "easy",
+            "用筛选与汇总题判断能否进入 python-data-processing 起步路线",
+            "sum_valid_amounts",
+            ["rows"],
+            "请实现函数 sum_valid_amounts(rows)。输入是一个列表，列表元素为字典。只统计 status 等于 'paid' 且 amount 不是 None 的记录，并返回这些 amount 的总和。这题用于判断你是否已经具备进入 python-data-processing 起步路线的最小证据。完成后，你还需要说明：如果你只能写出筛选代码，却说不清为什么先筛选、为什么排除缺失值、结果每一行/每个值代表什么，这为什么仍不足以跨过当前 diagnostic 的数据处理起点门槛。",
+            "def sum_valid_amounts(rows):\n    pass",
+            "def sum_valid_amounts(rows):\n    total = 0\n    for row in rows:\n        if row.get('status') == 'paid' and row.get('amount') is not None:\n            total += row.get('amount')\n    return total",
+            [
+                {"input": [[{"status": "paid", "amount": 10}, {"status": "pending", "amount": 20}, {"status": "paid", "amount": 5}]], "expected": 15},
+                {"input": [[{"status": "paid", "amount": None}, {"status": "paid", "amount": 7}]], "expected": 7},
+                {"input": [[{"status": "pending", "amount": 3}]], "expected": 0},
+            ],
+            ["python", "diagnostic", "data-processing", "next-step-routing"],
+            stage=primary_stage,
+            cluster="pandas-filtering" if "pandas-filtering" in resolved_target_clusters else primary_cluster,
+            subskills=["条件筛选", "缺失值处理", "结果汇总", "结果解释", "路线判断"],
+            question_role="project_task",
+        ),
+        "project_tasks",
+    )
+    if "python-llm-script" in required_capability_coverage or any(action.get("target_ref") == "python-llm-script" for action in repair_actions):
+        append_anchor_code(
+            make_code_question(
+                "diag-code-script",
+                "medium",
+                "用配置脚本题判断能否进入 python-llm-script 起步路线",
+                "read_model_name",
+                ["config_path"],
+                "请实现函数 read_model_name(config_path)。读取 JSON 文件并返回其中 model 对应的字符串；若文件不存在、JSON 非法或缺少 model 字段，返回 None。这题用于判断你是否已经具备进入 python-llm-script 起步路线的最小证据。完成后，你还需要说明：如果你只能写出读取逻辑，却讲不清输入输出契约、异常处理边界，以及这类脚本能力为什么会影响后续 LLM / API 应用路线，本轮为什么仍不能直接判定脚本路线已达标。",
+                "def read_model_name(config_path):\n    pass",
+                "from pathlib import Path\nimport json\n\ndef read_model_name(config_path):\n    try:\n        data = json.loads(Path(config_path).read_text(encoding='utf-8'))\n    except (FileNotFoundError, json.JSONDecodeError):\n        return None\n    model = data.get('model')\n    return model if isinstance(model, str) and model else None",
+                [
+                    {"input": ["/tmp/config-ok.json"], "expected_code": "with open('/tmp/config-ok.json', 'w', encoding='utf-8') as f:\n    f.write('{\"model\": \"claude-sonnet-4-6\"}')\nassert read_model_name('/tmp/config-ok.json') == 'claude-sonnet-4-6'"},
+                    {"input": ["/tmp/config-missing.json"], "expected_code": "with open('/tmp/config-missing.json', 'w', encoding='utf-8') as f:\n    f.write('{\"name\": \"demo\"}')\nassert read_model_name('/tmp/config-missing.json') is None"},
+                ],
+                ["python", "diagnostic", "llm-script", "next-step-routing"],
+                stage=primary_stage,
+                cluster="files-pathlib-json-exceptions" if "files-pathlib-json-exceptions" in resolved_target_clusters else primary_cluster,
+                subskills=["pathlib", "json.loads", "异常处理", "输入输出契约", "路线判断"],
+                question_role="review_target",
+            ),
+            "review_targets",
+        )
+
+    code_target_count = max(len(anchor_code_questions), required_code_question_count)
+    selected_code = anchor_code_questions[:]
+    if len(selected_code) < code_target_count:
+        selected_code.extend(
+            choose_diagnostic_bank_candidates(
+                selected_code + code_pool,
+                role_priority=["review", "learn", "bridge", "project_task", "review_target"],
+                required_clusters=resolved_target_clusters,
+                desired_count=code_target_count,
+            )
+        )
+    selected_code = combine_priority_pools(selected_code)[:code_target_count]
+
+    selected_open: list[dict[str, Any]] = []
+    if required_open_question_count > 0 or any(action.get("target_ref") == "open" for action in repair_actions):
+        open_primary_category = "review_targets" if "review_targets" in required_primary_categories else (required_primary_categories[0] if required_primary_categories else "review_targets")
+        selected_open.append(
+            build_python_diagnostic_written_anchor(
+                plan_source,
+                stage=primary_stage,
+                cluster="files-pathlib-json-exceptions" if "files-pathlib-json-exceptions" in resolved_target_clusters else primary_cluster,
+                primary_category=open_primary_category,
+            )
+        )
+
     selection_context = {
-        "target_stages": ["stage1"],
-        "target_clusters": ["functions-foundations", "exceptions-and-debugging", "files-and-io"],
-        "resolved_target_clusters": resolve_target_clusters(plan_source),
+        "target_stages": sorted({str(item.get("stage") or "") for item in (selected_concept + selected_code + selected_open) if str(item.get("stage") or "")}),
+        "target_clusters": resolved_target_clusters,
+        "resolved_target_clusters": resolved_target_clusters,
         "segment_target_clusters": [],
-        "cluster_selection_basis": "diagnostic-first-stage1-foundations",
+        "cluster_selection_basis": "diagnostic-scope-capability-routing",
+        "scope_target_capability_ids": blueprint_capability_ids,
         "concept_difficulties": ["easy", "medium"],
         "code_difficulties": ["easy", "medium"],
         "concept_quota": concept_quota,
         "code_quota": code_quota,
-        "concept_pool_policy": "stage1-foundations-exclude-material-specific-clusters",
-        "code_pool_policy": "stage1-foundations-exclude-material-specific-clusters",
+        "concept_pool_policy": "diagnostic-scope-cluster-only+anchor-coverage+repair-aware-mix",
+        "code_pool_policy": "diagnostic-scope-cluster-only+repair-aware-mix",
         "adjacent_fill_allowed": False,
-        "selection_policy": "python-diagnostic-first-foundations",
+        "selection_policy": "python-diagnostic-scope-first+anchor-coverage+repair-aware-reselection",
+        "repair_actions": repair_actions,
+        "required_primary_categories": required_primary_categories,
+        "required_capability_coverage": required_capability_coverage,
+        "required_open_question_count": required_open_question_count,
+        "required_code_question_count": required_code_question_count,
+        "selected_open_count": len(selected_open),
     }
-    return selected_concept, selected_code, selection_context
+    return selected_concept + selected_open, selected_code, selection_context
+
+
+def build_python_question_generation_seed(
+    concept: list[dict[str, Any]],
+    code: list[dict[str, Any]],
+    plan_source: dict[str, Any],
+    repair_plan: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    selected_concept, selected_code, selection_context = select_python_questions(concept, code, plan_source, repair_plan=repair_plan)
+    concept_non_open = [item for item in selected_concept if isinstance(item, dict) and str(item.get("category") or "").strip().lower() != "open"]
+    concept_open = [item for item in selected_concept if isinstance(item, dict) and str(item.get("category") or "").strip().lower() == "open"]
+    seed_questions: list[dict[str, Any]] = []
+    max_len = max(len(concept_non_open), len(selected_code), len(concept_open))
+    for index in range(max_len):
+        if index < len(concept_non_open):
+            seed_questions.append(concept_non_open[index])
+        if index < len(selected_code):
+            seed_questions.append(selected_code[index])
+        if index < len(concept_open):
+            seed_questions.append(concept_open[index])
+    minimum_pass_shape = repair_plan.get("minimum_pass_shape") if isinstance(repair_plan, dict) and isinstance(repair_plan.get("minimum_pass_shape"), dict) else {}
+    seed_constraints = {
+        "selection_context": selection_context,
+        "required_primary_categories": normalize_string_list(
+            minimum_pass_shape.get("required_primary_categories") or selection_context.get("required_primary_categories") or []
+        ),
+        "required_capability_coverage": normalize_string_list(
+            minimum_pass_shape.get("required_capability_coverage") or selection_context.get("required_capability_coverage") or selection_context.get("scope_target_capability_ids") or []
+        ),
+        "required_open_question_count": max(0, int(minimum_pass_shape.get("required_open_question_count") or selection_context.get("required_open_question_count") or 0)),
+        "required_code_question_count": max(0, int(minimum_pass_shape.get("required_code_question_count") or selection_context.get("required_code_question_count") or 0)),
+        "repair_actions": diagnostic_repair_actions(repair_plan),
+        "forbidden_patterns": normalize_string_list(minimum_pass_shape.get("forbidden_patterns") or []),
+    }
+    question_mix = {
+        "concept": len([item for item in selected_concept if str(item.get("category") or "").strip().lower() != "open"]),
+        "code": len(selected_code),
+        "open": len([item for item in selected_concept if str(item.get("category") or "").strip().lower() == "open"]),
+    }
+    return {
+        "seed_questions": seed_questions,
+        "question_mix": question_mix,
+        "seed_constraints": seed_constraints,
+        "selection_context": selection_context,
+    }
+
 
 
 def select_python_questions(
     concept: list[dict[str, Any]],
     code: list[dict[str, Any]],
     plan_source: dict[str, Any],
+    repair_plan: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     if is_initial_diagnostic_plan_source(plan_source):
-        return select_python_diagnostic_questions(concept, code, plan_source)
+        return select_python_diagnostic_questions(concept, code, plan_source, repair_plan=repair_plan)
 
     focus_terms = collect_focus_terms(plan_source)
     concept_difficulties = extract_difficulty_targets(plan_source, "concept")

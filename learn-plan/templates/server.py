@@ -8,6 +8,7 @@ learn-plan 本地服务器
 
 import json
 import os
+import shlex
 import socket
 import subprocess
 import sys
@@ -15,10 +16,20 @@ import tempfile
 import textwrap
 import threading
 import time
+from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
-PORT = 8080
+
+def resolve_port() -> int:
+    raw = os.environ.get("LEARN_PLAN_PORT") or "8080"
+    try:
+        return max(1, int(raw))
+    except (TypeError, ValueError):
+        return 8080
+
+
+PORT = resolve_port()
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROGRESS_FILE = os.path.join(BASE_DIR, "progress.json")
 QUESTIONS_FILE = os.path.join(BASE_DIR, "questions.json")
@@ -26,6 +37,7 @@ HTML_FILE = os.path.join(BASE_DIR, "题集.html")
 CONDA_ENV = "base"
 RESULT_PREFIX = "__LEARN_CODE_RESULT__="
 HEATMAP_DAYS = 35
+MAX_FAILED_CASE_SUMMARIES = 3
 
 last_heartbeat_at = time.time()
 shutdown_requested = False
@@ -111,7 +123,7 @@ def build_display_safe_questions_payload(data):
             safe_questions.append(item)
             continue
         safe_item = dict(item)
-        for key in ("answer", "explanation", "reference_points", "grading_hint", "solution_code"):
+        for key in ("answer", "answers", "explanation", "reference_points", "grading_hint", "solution_code", "hidden_tests"):
             safe_item.pop(key, None)
         safe_questions.append(safe_item)
     payload["questions"] = safe_questions
@@ -135,26 +147,34 @@ def normalize_selected_indices(selected):
     return values
 
 
+def normalize_question_type(value):
+    qtype = str(value or "").strip().lower()
+    return {"single": "single_choice", "multi": "multiple_choice", "judge": "true_false"}.get(qtype, qtype)
+
+
 def grade_concept_answer(question, selected):
-    qtype = str(question.get("type") or "").strip().lower()
-    if qtype == "judge":
+    qtype = normalize_question_type(question.get("type"))
+    if qtype == "true_false":
         answer = question.get("answer")
         correct_idx = 0 if answer is True or answer == 0 or str(answer).strip().lower() == "true" else 1
         return len(selected) == 1 and selected[0] == correct_idx
-    if qtype == "single":
+    if qtype == "single_choice":
         try:
             correct_idx = int(question.get("answer"))
         except (TypeError, ValueError):
             return False
         return len(selected) == 1 and selected[0] == correct_idx
-    expected = []
-    if isinstance(question.get("answer"), list):
-        for item in question.get("answer"):
-            try:
-                expected.append(int(item))
-            except (TypeError, ValueError):
-                continue
-    return sorted(set(selected)) == sorted(set(expected))
+    if qtype == "multiple_choice":
+        expected = []
+        raw_answer = question.get("answers", question.get("answer"))
+        if isinstance(raw_answer, list):
+            for item in raw_answer:
+                try:
+                    expected.append(int(item))
+                except (TypeError, ValueError):
+                    continue
+        return sorted(set(selected)) == sorted(set(expected))
+    return False
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -415,39 +435,89 @@ class Handler(BaseHTTPRequestHandler):
             case=case,
             timeout=timeout,
         )
+        input_repr = case.get("input", case.get("args", case.get("kwargs"))) if isinstance(case, dict) else None
         return {
             "returncode": 0 if not runner.get("error") else -1,
             "stdout": "",
             "stderr": runner.get("error", ""),
             "result_repr": runner.get("actual_repr", ""),
+            "run_cases": [
+                {
+                    "input": input_repr,
+                    "input_repr": repr(input_repr),
+                    "actual_repr": runner.get("actual_repr", ""),
+                    "error": runner.get("error", ""),
+                }
+            ],
             "error": runner.get("error", ""),
         }
 
     def _submit_function(self, payload, timeout=10):
         code = payload.get("code", "")
+        question = find_question_by_id(payload.get("question_id")) if payload.get("question_id") else None
         function_name = payload.get("function_name", "")
         test_cases = payload.get("test_cases", [])
-        results = []
-        all_passed = True
+        if isinstance(question, dict):
+            function_name = function_name or question.get("function_name", "")
+            test_cases = []
+            for key, category in (("public_tests", "public"), ("hidden_tests", "hidden")):
+                for case in question.get(key) or []:
+                    if isinstance(case, dict):
+                        normalized_case = dict(case)
+                        normalized_case.setdefault("category", category)
+                        test_cases.append(normalized_case)
+            if not test_cases:
+                test_cases = question.get("test_cases", [])
+        failed_case_summaries = []
+        failure_types = []
+        passed_count = 0
+        passed_public_count = 0
+        passed_hidden_count = 0
+        total_public_count = 0
+        total_hidden_count = 0
         for i, case in enumerate(test_cases):
+            category = case.get("category", "public") if isinstance(case, dict) else "public"
+            if category == "hidden":
+                total_hidden_count += 1
+            else:
+                total_public_count += 1
             result = self._run_function_case(code, function_name, case, timeout)
             passed = bool(result.get("passed")) and not result.get("error")
-            if not passed:
-                all_passed = False
-            results.append(
-                {
-                    "case": i + 1,
-                    "passed": passed,
-                    "expected_repr": result.get("expected_repr", ""),
-                    "actual_repr": result.get("actual_repr", ""),
-                    "error": result.get("error", ""),
-                }
-            )
+            if passed:
+                passed_count += 1
+                if category == "hidden":
+                    passed_hidden_count += 1
+                else:
+                    passed_public_count += 1
+                continue
+            error = result.get("error") or "wrong_answer"
+            if error not in failure_types:
+                failure_types.append(error)
+            if len(failed_case_summaries) < MAX_FAILED_CASE_SUMMARIES:
+                failed_case_summaries.append(
+                    {
+                        "case": i + 1,
+                        "category": category,
+                        "passed": False,
+                        "input": case.get("input", case.get("args", case.get("kwargs"))) if isinstance(case, dict) else None,
+                        "expected": case.get("expected") if isinstance(case, dict) else None,
+                        "expected_repr": result.get("expected_repr", ""),
+                        "actual_repr": result.get("actual_repr", ""),
+                        "error": error,
+                        "capability_tags": case.get("capability_tags", []) if isinstance(case, dict) else [],
+                    }
+                )
         return {
-            "all_passed": all_passed,
-            "passed_count": sum(1 for item in results if item["passed"]),
-            "total_count": len(results),
-            "results": results,
+            "all_passed": passed_count == len(test_cases),
+            "passed_count": passed_count,
+            "total_count": len(test_cases),
+            "passed_public_count": passed_public_count,
+            "total_public_count": total_public_count,
+            "passed_hidden_count": passed_hidden_count,
+            "total_hidden_count": total_hidden_count,
+            "failed_case_summaries": failed_case_summaries,
+            "failure_types": failure_types,
+            "results": failed_case_summaries,
         }
 
     def _run_function_case(self, code, function_name, case, timeout):
@@ -479,20 +549,38 @@ class Handler(BaseHTTPRequestHandler):
                 return data
 
             def normalize_args(case, namespace):
+                if case.get('args_code') is not None:
+                    args = eval(case['args_code'], namespace, namespace)
+                    if isinstance(args, tuple):
+                        return list(args)
+                    if isinstance(args, list):
+                        return args
+                    raise TypeError('args_code must evaluate to list or tuple')
+                if 'args' in case:
+                    args = case.get('args')
+                    if isinstance(args, tuple):
+                        return list(args)
+                    if isinstance(args, list):
+                        return args
+                    raise TypeError('args must be list')
                 if case.get('input_code') is not None:
-                    args = eval(case['input_code'], namespace, namespace)
-                else:
-                    args = case.get('input', [])
-                if isinstance(args, tuple):
-                    return list(args)
-                if isinstance(args, list):
-                    return args
-                return [args]
+                    return [eval(case['input_code'], namespace, namespace)]
+                if 'input' in case:
+                    return [case.get('input')]
+                return []
 
             def normalize_kwargs(case, namespace):
                 if case.get('kwargs_code') is not None:
-                    return eval(case['kwargs_code'], namespace, namespace)
-                return case.get('kwargs', {{}})
+                    kwargs = eval(case['kwargs_code'], namespace, namespace)
+                    if not isinstance(kwargs, dict):
+                        raise TypeError('kwargs_code must evaluate to dict')
+                    return kwargs
+                if 'kwargs' in case:
+                    kwargs = case.get('kwargs')
+                    if not isinstance(kwargs, dict):
+                        raise TypeError('kwargs must be object')
+                    return kwargs
+                return {{}}
 
             def compare_values(actual, expected):
                 if hasattr(actual, 'equals') and callable(actual.equals):
@@ -580,6 +668,109 @@ class Handler(BaseHTTPRequestHandler):
 
 
 
+def _load_diagnostic_resume_context(plan_path):
+    if not plan_path:
+        return {}
+    diagnostic_path = Path(plan_path).expanduser().resolve().parent / ".learn-workflow" / "diagnostic.json"
+    try:
+        with open(diagnostic_path, "r", encoding="utf-8") as f:
+            diagnostic = json.load(f)
+    except Exception:
+        return {}
+    context = diagnostic.get("resume_context") if isinstance(diagnostic.get("resume_context"), dict) else {}
+    return context if isinstance(context, dict) else {}
+
+
+
+def build_diagnostic_next_route(progress):
+    session = progress.get("session") if isinstance(progress.get("session"), dict) else {}
+    execution_mode = session.get("plan_execution_mode")
+    if execution_mode not in {"diagnostic", "test-diagnostic"}:
+        return None
+    round_index = session.get("round_index")
+    max_rounds = session.get("max_rounds")
+    try:
+        next_round_index = int(round_index or 0) + 1
+    except (TypeError, ValueError):
+        next_round_index = None
+    try:
+        max_rounds_value = int(max_rounds or 0)
+    except (TypeError, ValueError):
+        max_rounds_value = 0
+    follow_up_needed = bool(session.get("follow_up_needed"))
+    next_round_required = bool(follow_up_needed and next_round_index and (max_rounds_value <= 0 or next_round_index <= max_rounds_value))
+    return {
+        "next_diagnostic_round_required": next_round_required,
+        "next_round_index": next_round_index,
+        "max_rounds": max_rounds,
+        "required_artifacts": ["lesson-artifact-json", "question-artifact-json", "question-review-json"] if next_round_required else ["semantic-diagnostic-json"],
+        "next_action": "prepare_next_diagnostic_round_artifacts" if next_round_required else "run_semantic_diagnostic_update",
+    }
+
+
+
+def build_resume_command(progress):
+    session = progress.get("session") or {}
+    context = progress.get("context") if isinstance(progress.get("context"), dict) else {}
+    plan_path = session.get("plan_path")
+    resume_context = _load_diagnostic_resume_context(plan_path)
+    goal_model = context.get("goal_model") if isinstance(context.get("goal_model"), dict) else {}
+    diagnostic_profile = context.get("diagnostic_profile") if isinstance(context.get("diagnostic_profile"), dict) else {}
+    resume_topic = session.get("resume_topic") or resume_context.get("topic") or progress.get("topic") or goal_model.get("mainline_goal")
+    resume_goal = session.get("resume_goal") or resume_context.get("goal") or goal_model.get("mainline_goal") or progress.get("topic")
+    resume_level = session.get("resume_level") or resume_context.get("level") or diagnostic_profile.get("recommended_entry_level") or diagnostic_profile.get("baseline_level") or context.get("current_stage") or "diagnostic"
+    resume_schedule = session.get("resume_schedule") or resume_context.get("schedule") or "未指定"
+    resume_preference = session.get("resume_preference") or resume_context.get("preference") or "混合"
+    execution_mode = session.get("plan_execution_mode")
+    session_type = session.get("type")
+    skill_dir = session.get("skill_dir") or os.path.expanduser("~/.claude/skills/learn-plan")
+    learn_test_update = os.path.join(skill_dir, "learn_test_update.py")
+    update_command = None
+    if plan_path and session_type == "test":
+        update_command = " ".join([
+            shlex.quote(sys.executable),
+            shlex.quote(learn_test_update),
+            "--session-dir", shlex.quote(BASE_DIR),
+            "--plan-path", shlex.quote(plan_path),
+        ])
+    if execution_mode not in {"diagnostic", "test-diagnostic"}:
+        return update_command
+    if not all([plan_path, resume_topic, resume_goal, resume_level]):
+        return update_command
+    learn_plan = os.path.join(skill_dir, "learn_plan.py")
+    resume_plan_command = " ".join([
+        shlex.quote(sys.executable),
+        shlex.quote(learn_plan),
+        "--topic", shlex.quote(str(resume_topic)),
+        "--goal", shlex.quote(str(resume_goal)),
+        "--level", shlex.quote(str(resume_level)),
+        "--schedule", shlex.quote(str(resume_schedule)),
+        "--preference", shlex.quote(str(resume_preference)),
+        "--plan-path", shlex.quote(plan_path),
+        "--mode", "auto",
+    ])
+    if update_command:
+        return " && ".join([update_command, resume_plan_command])
+    return resume_plan_command
+
+
+
+def auto_resume_session(resume_command):
+    if not resume_command:
+        return
+    time.sleep(0.2)
+    shutdown_server_soon(0)
+    time.sleep(0.6)
+    subprocess.Popen(
+        ["/bin/zsh", "-lc", resume_command],
+        cwd=BASE_DIR,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
+
 def finish_session(payload):
     progress = {}
     if os.path.exists(PROGRESS_FILE):
@@ -600,10 +791,19 @@ def finish_session(payload):
     with open(PROGRESS_FILE, "w", encoding="utf-8") as f:
         json.dump(progress, f, ensure_ascii=False, indent=2)
 
+    resume_command = build_resume_command(progress)
+    diagnostic_next_route = build_diagnostic_next_route(progress)
+    auto_resume_started = bool(resume_command)
+    if auto_resume_started:
+        threading.Thread(target=auto_resume_session, args=(resume_command,), daemon=False).start()
     return {
         "ok": True,
         "progress": progress,
-        "message": "session finished"
+        "message": "session finished",
+        "resume_command": resume_command,
+        "auto_resume_available": auto_resume_started,
+        "auto_resume_started": auto_resume_started,
+        "diagnostic_next_route": diagnostic_next_route,
     }
 
 

@@ -1,0 +1,115 @@
+<script setup lang="ts">
+import { computed } from 'vue'
+import { renderRichText } from '../renderers/richText'
+import type { DemoQuestion, ProblemPanelMode, SubmitRecord } from '../types'
+import StatusPanel from './StatusPanel.vue'
+import SubmitHistory from './SubmitHistory.vue'
+
+const props = defineProps<{
+  question: DemoQuestion
+  mode: ProblemPanelMode
+  records: SubmitRecord[]
+}>()
+
+const emit = defineEmits<{
+  changeMode: [mode: ProblemPanelMode]
+}>()
+
+const questionTypeMeta = computed(() => {
+  if (props.question.type === 'code') return { label: '代码题', code: 'CODE' }
+  if (props.question.type === 'single_choice') return { label: '选择题 · 单选', code: 'SINGLE' }
+  if (props.question.type === 'multiple_choice') return { label: '选择题 · 多选', code: 'MULTI' }
+  return { label: '判断题', code: 'TRUE / FALSE' }
+})
+const descriptionHtml = computed(() => renderRichText(props.question.description))
+const inputSpecHtml = computed(() => renderRichText(props.question.inputSpec))
+const outputSpecHtml = computed(() => renderRichText(props.question.outputSpec))
+const constraintItems = computed(() => props.question.constraints || [])
+const exampleItems = computed(() => props.question.examples || [])
+</script>
+
+<template>
+  <section class="problem-panel">
+    <header class="problem-titlebar">
+      <div>
+        <p class="eyebrow">{{ props.question.difficulty }} · {{ props.question.tags.join(' / ') }}</p>
+        <h2>{{ props.question.order }}. {{ props.question.title }}</h2>
+      </div>
+      <span class="type-badge">
+        <span class="type-badge-label">{{ questionTypeMeta.label }}</span>
+        <span class="type-badge-code">{{ questionTypeMeta.code }}</span>
+      </span>
+    </header>
+
+    <nav class="tabbar" aria-label="题目信息切换">
+      <button :class="{ active: props.mode === 'description' }" type="button" @click="emit('changeMode', 'description')">题目描述</button>
+      <button :class="{ active: props.mode === 'history' }" type="button" @click="emit('changeMode', 'history')">提交记录</button>
+      <button :class="{ active: props.mode === 'status' }" type="button" @click="emit('changeMode', 'status')">答题状态</button>
+    </nav>
+
+    <div class="tab-content">
+      <div v-if="props.mode === 'description'" class="description-layout">
+        <article class="statement-card hero">
+          <p class="eyebrow">Problem Statement</p>
+          <h3>题目详细描述</h3>
+          <div class="rich-text" v-html="descriptionHtml" />
+        </article>
+
+        <div class="io-spec-grid">
+          <article v-if="props.question.inputSpec" class="io-spec-card input-spec">
+            <p class="eyebrow">Input</p>
+            <h3>输入说明</h3>
+            <div class="rich-text" v-html="inputSpecHtml" />
+          </article>
+          <article v-if="props.question.outputSpec" class="io-spec-card output-spec">
+            <p class="eyebrow">Output</p>
+            <h3>输出说明</h3>
+            <div class="rich-text" v-html="outputSpecHtml" />
+          </article>
+        </div>
+
+        <article v-if="constraintItems.length" class="statement-card compact">
+          <p class="eyebrow">Limits</p>
+          <h3>约束条件</h3>
+          <ul class="constraint-list">
+            <li v-for="constraint in constraintItems" :key="constraint" v-html="renderRichText(constraint)" />
+          </ul>
+        </article>
+
+        <article v-if="exampleItems.length" class="statement-card compact">
+          <p class="eyebrow">Examples</p>
+          <h3>示例</h3>
+          <div class="example-list">
+            <section v-for="example in exampleItems" :key="example.title" class="example-card">
+              <span>{{ example.title }}</span>
+              <div class="example-io-grid">
+                <div class="example-io-block input-block">
+                  <strong>输入</strong>
+                  <pre>{{ example.inputCode }}</pre>
+                </div>
+                <div class="example-io-block output-block">
+                  <strong>输出</strong>
+                  <pre>{{ example.outputCode }}</pre>
+                </div>
+              </div>
+              <div v-if="example.explanation" class="rich-text example-explanation" v-html="renderRichText(example.explanation)" />
+            </section>
+          </div>
+        </article>
+
+        <article v-if="props.question.publicTests?.length" class="statement-card compact public-tests-section">
+          <p class="eyebrow">Public Tests</p>
+          <h3>公开测试</h3>
+          <div class="public-test-list">
+            <dl v-for="testCase in props.question.publicTests" :key="testCase.name" class="public-test-card">
+              <div class="public-test-io-block input-block"><dt>输入</dt><dd>{{ testCase.input }}</dd></div>
+              <div class="public-test-io-block output-block"><dt>期望</dt><dd>{{ testCase.expected }}</dd></div>
+            </dl>
+          </div>
+        </article>
+      </div>
+      <SubmitHistory v-else-if="props.mode === 'history'" :records="props.records" />
+      <StatusPanel v-else :question="props.question" :records="props.records" />
+    </div>
+  </section>
+</template>

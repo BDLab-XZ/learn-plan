@@ -35,10 +35,19 @@ def build_plan_candidate(profile: dict[str, Any], curriculum: dict[str, Any]) ->
         for stage in stages
         if isinstance(stage, dict) and stage.get("focus")
     ]
+    resolved_entry_level = diagnostic_profile.get("recommended_entry_level") or profile.get("level")
+    problem_definition = normalize_string_list(
+        curriculum.get("problem_definition")
+        or profile.get("problem_definition")
+        or research_report.get("problem_definition")
+        or research_report.get("gap_summary")
+        or research_report.get("evidence_summary")
+        or []
+    )
     evidence = normalize_string_list(
         [
             f"goal={profile.get('goal')}",
-            f"recommended_entry_level={diagnostic_profile.get('recommended_entry_level') or profile.get('level')}",
+            *([f"recommended_entry_level={diagnostic_profile.get('recommended_entry_level')}"] if diagnostic_profile.get("recommended_entry_level") else []),
             *(research_report.get("evidence_summary") or []),
         ]
     )
@@ -46,12 +55,40 @@ def build_plan_candidate(profile: dict[str, Any], curriculum: dict[str, Any]) ->
         "plan_candidate": {
             "topic": profile.get("topic"),
             "goal": profile.get("goal"),
-            "entry_level": diagnostic_profile.get("recommended_entry_level") or profile.get("level"),
+            "entry_level": resolved_entry_level,
+            "problem_definition": problem_definition,
             "stage_goals": stage_goals,
             "material_roles": material_roles,
             "mastery_checks": mastery_checks,
             "daily_execution_logic": daily_execution_logic,
             "tradeoffs": normalize_string_list(approval_state.get("pending_decisions") or approval_state.get("accepted_tradeoffs")),
+            "stages": [
+                {
+                    "id": f"stage-{index + 1}",
+                    "name": (
+                        f"{stage.get('name')}：{stage.get('focus')}"
+                        if stage.get("name") and stage.get("focus") and str(stage.get("focus")) not in str(stage.get("name"))
+                        else stage.get("name")
+                    ),
+                    "goal": stage.get("goal"),
+                    "why_now": stage.get("future_use"),
+                    "focus": normalize_string_list(stage.get("focus") if isinstance(stage.get("focus"), list) else [stage.get("focus")]),
+                    "selected_materials": [
+                        {"title": item, "role": "主线输入", "when_to_use": "阶段学习时配合练习使用"}
+                        for item in normalize_string_list(stage.get("reading") or [])
+                    ],
+                    "practice": normalize_string_list(stage.get("exercise_types") or []),
+                    "mastery_check": normalize_string_list(stage.get("test_gate") if isinstance(stage.get("test_gate"), list) else [stage.get("test_gate")]),
+                    "exit_standard": stage.get("test_gate"),
+                    "target_gap": stage.get("target_gap") or stage.get("gap") or stage.get("focus"),
+                    "capability_metric": stage.get("capability_metric") or stage.get("metric") or stage.get("test_gate"),
+                    "evidence_requirement": stage.get("evidence_requirement") or stage.get("learning_evidence") or stage.get("test_gate"),
+                    "approx_time_range": stage.get("approx_time_range") or stage.get("time_range") or stage.get("duration"),
+                    "common_blockers": [],
+                }
+                for index, stage in enumerate(stages)
+                if isinstance(stage, dict)
+            ],
         }
     }
     traceability = [

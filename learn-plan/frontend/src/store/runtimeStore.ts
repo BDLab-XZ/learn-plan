@@ -1,0 +1,446 @@
+import { computed, reactive, ref } from 'vue'
+import type {
+  DemoQuestion,
+  FailedCaseSummary,
+  ProblemPanelMode,
+  QuestionProgress,
+  RuntimeProgress,
+  RuntimeQuestion,
+  RuntimeQuestionsPayload,
+  RuntimeTestCase,
+  RunCaseRecord,
+  SubmitRecord,
+  SubmitResult,
+  TestCaseRecord,
+} from '../types'
+
+interface RuntimeState {
+  questions: DemoQuestion[]
+  rawQuestions: RuntimeQuestion[]
+  progress: RuntimeProgress
+  activeQuestionId: string
+  panelMode: ProblemPanelMode
+  sidebarCollapsed: boolean
+  loading: boolean
+  error: string
+  title: string
+  topic: string
+}
+
+const toastRecord = ref<SubmitRecord | null>(null)
+
+const state = reactive<RuntimeState>({
+  questions: [],
+  rawQuestions: [],
+  progress: { summary: { total: 0, attempted: 0, correct: 0 }, questions: {} },
+  activeQuestionId: '',
+  panelMode: 'description',
+  sidebarCollapsed: false,
+  loading: true,
+  error: '',
+  title: '',
+  topic: '',
+})
+
+let loadStarted = false
+let heartbeatTimer: number | undefined
+
+function stringifyValue(value: unknown): string {
+  if (value === undefined || value === null) return ''
+  if (typeof value === 'string') return value
+  try {
+    return JSON.stringify(value, null, 2)
+  } catch {
+    return String(value)
+  }
+}
+
+function formatTime(value?: string | null): string {
+  if (!value) return new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+}
+
+function normalizeDifficulty(value: unknown): DemoQuestion['difficulty'] {
+  const text = String(value || '')
+  if (text.includes('挑战') || text.toLowerCase().includes('hard')) return '挑战'
+  if (text.includes('进阶') || text.toLowerCase().includes('medium')) return '进阶'
+  return '基础'
+}
+
+function normalizeConstraints(value: RuntimeQuestion['constraints']): string[] {
+  if (Array.isArray(value)) return value.map((item) => String(item))
+  if (typeof value === 'string' && value.trim()) return value.split('\n').map((item) => item.trim()).filter(Boolean)
+  return []
+}
+
+function caseInput(testCase: RuntimeTestCase | FailedCaseSummary): unknown {
+  if ('input' in testCase && testCase.input !== undefined) return testCase.input
+  if ('args' in testCase && testCase.args !== undefined) return testCase.args
+  if ('kwargs' in testCase && testCase.kwargs !== undefined) return testCase.kwargs
+  return ''
+}
+
+function mapPublicTest(testCase: RuntimeTestCase, index: number): TestCaseRecord {
+  return {
+    name: `公开测试 ${index + 1}`,
+    input: stringifyValue(caseInput(testCase)),
+    expected: stringifyValue(testCase.expected),
+    actual: '等待运行',
+    passed: false,
+  }
+}
+
+function mapFailedCase(testCase: FailedCaseSummary, index: number): TestCaseRecord {
+  return {
+    name: `${testCase.category === 'hidden' ? '隐藏' : '公开'}测试 ${testCase.case || index + 1}`,
+    input: stringifyValue(caseInput(testCase)),
+    expected: stringifyValue(testCase.expected_repr || testCase.expected),
+    actual: stringifyValue(testCase.actual_repr),
+    passed: false,
+    error: testCase.error,
+    stdout: stringifyValue(testCase.stdout),
+  }
+}
+
+function buildPassedCases(result: SubmitResult): TestCaseRecord[] {
+  const failedCount = result.failed_case_summaries?.length || 0
+  const total = result.total_count ?? (result.ok || result.is_correct ? 1 : failedCount)
+  const passed = Math.max(0, (result.passed_count ?? (result.ok || result.is_correct ? total : 0)) - failedCount)
+  return Array.from({ length: passed }, (_, index) => ({
+    name: `通过测试 ${index + 1}`,
+    input: '',
+    expected: '',
+    actual: '',
+    passed: true,
+  }))
+}
+
+function mapRunCases(result: SubmitResult): RunCaseRecord[] {
+  return (result.run_cases || []).map((item, index) => ({
+    name: `运行样例 ${index + 1}`,
+    input: stringifyValue(item.input_repr || item.input),
+    actual: stringifyValue(item.actual_repr || item.actual),
+    error: item.error,
+    stdout: stringifyValue(item.stdout),
+  }))
+}
+
+function buildTerminalOutput(record: Pick<SubmitRecord, 'action' | 'message' | 'testCases' | 'runCases' | 'failure_types'>): string {
+  if (record.runCases?.length) {
+    return record.runCases.map((testCase) => [
+      `测试输入：${testCase.input}`,
+      `实际输出：${testCase.actual || '(无输出)'}`,
+      testCase.error ? `错误：${testCase.error}` : '',
+    ].filter(Boolean).join('\n')).join('\n\n')
+  }
+  const failed = record.testCases.filter((testCase) => !testCase.passed)
+  if (failed.length) {
+    return failed.map((testCase) => [
+      `测试输入：${testCase.input}`,
+      `期望输出：${testCase.expected}`,
+      `实际输出：${testCase.actual || '(无输出)'}`,
+      testCase.error ? `错误：${testCase.error}` : '',
+    ].filter(Boolean).join('\n')).join('\n\n')
+  }
+  return record.action === 'run' ? '运行完成，但没有可展示的样例输出。' : '本次提交没有失败样例输出。'
+}
+
+function resultToRecord(questionId: string, action: SubmitRecord['action'], result: SubmitResult): SubmitRecord {
+  const failed = (result.failed_case_summaries || []).map(mapFailedCase)
+  const passed = buildPassedCases(result)
+  const ok = result.all_passed ?? result.is_correct ?? result.ok ?? !result.error
+  const totalPublic = result.total_public_count ?? 0
+  const totalHidden = result.total_hidden_count ?? 0
+  const publicText = totalPublic ? `公开 ${result.passed_public_count || 0}/${totalPublic}` : ''
+  const hiddenText = totalHidden ? `隐藏 ${result.passed_hidden_count || 0}/${totalHidden}` : ''
+  const failureText = result.failure_types?.length ? `失败类型：${result.failure_types.join('、')}` : ''
+  const detail = [publicText, hiddenText, failureText].filter(Boolean).join('，')
+  const record: Omit<SubmitRecord, 'terminalOutput'> = {
+    id: `${Date.now()}-${action}`,
+    questionId,
+    action,
+    status: ok ? 'passed' : 'failed',
+    message: result.error || (detail ? `${ok ? '通过' : '未通过'}：${detail}` : ok ? '运行完成。' : '答案未通过。'),
+    createdAt: formatTime(result.submitted_at),
+    testCases: [...passed, ...failed],
+    runCases: mapRunCases(result),
+    failure_types: result.failure_types,
+  }
+  return {
+    ...record,
+    terminalOutput: buildTerminalOutput(record),
+  }
+}
+
+function questionProgress(questionId: string): QuestionProgress {
+  if (!state.progress.questions) state.progress.questions = {}
+  if (!state.progress.questions[questionId]) state.progress.questions[questionId] = { stats: {}, history: [] }
+  const progress = state.progress.questions[questionId]
+  if (!progress.stats) progress.stats = {}
+  if (!progress.history) progress.history = []
+  if (!progress.stats.submit_history) progress.stats.submit_history = []
+  return progress
+}
+
+function statusFromProgress(questionId: string, draft: string): DemoQuestion['status'] {
+  const stats = state.progress.questions?.[questionId]?.stats
+  if (stats?.last_status === 'passed' || stats?.last_status === 'correct') return 'passed'
+  if (stats?.last_status === 'failed' || stats?.last_status === 'incorrect') return 'failed'
+  if (draft.trim()) return 'draft'
+  return 'not_started'
+}
+
+function mapQuestion(question: RuntimeQuestion, index: number): DemoQuestion {
+  const progress = state.progress.questions?.[question.id]
+  const selectedDraft = progress?.selected?.map((item) => question.options?.[item]).filter(Boolean).join('\n') || ''
+  const draft = progress?.draft || selectedDraft || question.starter_code || ''
+  const examples = (question.examples || []).map((example, exampleIndex) => ({
+    title: `示例 ${exampleIndex + 1}`,
+    inputCode: stringifyValue(example.input),
+    outputCode: stringifyValue(example.output),
+    explanation: example.explanation,
+  }))
+  return {
+    id: question.id,
+    order: index + 1,
+    title: question.title || question.function_name || `题目 ${index + 1}`,
+    type: question.type,
+    difficulty: normalizeDifficulty(question.difficulty),
+    status: statusFromProgress(question.id, draft),
+    tags: question.capability_tags?.length ? question.capability_tags : [question.category || question.type],
+    description: question.problem_statement || question.prompt || '',
+    inputSpec: question.input_spec || question.function_signature,
+    outputSpec: question.output_spec,
+    constraints: normalizeConstraints(question.constraints),
+    examples,
+    publicTests: (question.public_tests || []).map(mapPublicTest),
+    functionName: question.function_name,
+    functionSignature: question.function_signature,
+    starterCode: question.starter_code,
+    options: question.options,
+    answerDraft: draft,
+  }
+}
+
+function refreshQuestions() {
+  state.questions = state.rawQuestions.map(mapQuestion)
+  if (!state.activeQuestionId && state.questions[0]) state.activeQuestionId = state.questions[0].id
+}
+
+async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
+  const response = await fetch(url, options)
+  if (!response.ok) throw new Error(`${response.status} ${response.statusText}`)
+  return response.json() as Promise<T>
+}
+
+async function load() {
+  state.loading = true
+  state.error = ''
+  try {
+    const [questionsPayload, progressPayload] = await Promise.all([
+      fetchJson<RuntimeQuestionsPayload>('./questions.json'),
+      fetchJson<RuntimeProgress>('./progress'),
+    ])
+    state.rawQuestions = questionsPayload.questions || []
+    state.progress = progressPayload || { summary: {}, questions: {} }
+    state.title = questionsPayload.title || ''
+    state.topic = questionsPayload.topic || ''
+    if (!state.progress.questions) state.progress.questions = {}
+    refreshQuestions()
+  } catch (error) {
+    state.error = error instanceof Error ? error.message : String(error)
+  } finally {
+    state.loading = false
+  }
+}
+
+async function persistProgress() {
+  const questions = Object.values(state.progress.questions || {})
+  const attempted = questions.filter((item) => (item.stats?.attempts || 0) > 0).length
+  const correct = questions.filter((item) => item.stats?.last_status === 'passed' || item.stats?.last_status === 'correct').length
+  state.progress.summary = {
+    ...(state.progress.summary || {}),
+    total: state.rawQuestions.length,
+    attempted,
+    correct,
+  }
+  await fetchJson<{ ok: boolean }>('./progress', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(state.progress),
+  })
+}
+
+const activeQuestion = computed(() => state.questions.find((question) => question.id === state.activeQuestionId) || state.questions[0])
+const activeRawQuestion = computed(() => state.rawQuestions.find((question) => question.id === state.activeQuestionId) || state.rawQuestions[0])
+const activeHistory = computed(() => (state.progress.questions?.[state.activeQuestionId]?.history || []).slice().reverse())
+const latestRecord = computed(() => activeHistory.value[0])
+const latestRecordsByQuestion = computed(() => {
+  const records: Record<string, SubmitRecord> = {}
+  for (const [questionId, progress] of Object.entries(state.progress.questions || {})) {
+    const latest = progress.history?.[progress.history.length - 1]
+    if (latest) records[questionId] = latest
+  }
+  return records
+})
+
+function selectQuestion(questionId: string) {
+  state.activeQuestionId = questionId
+}
+
+function toggleSidebar() {
+  state.sidebarCollapsed = !state.sidebarCollapsed
+}
+
+function setPanelMode(mode: ProblemPanelMode) {
+  state.panelMode = mode
+}
+
+function updateDraft(value: string) {
+  const question = activeQuestion.value
+  if (!question) return
+  question.answerDraft = value
+  const progress = questionProgress(question.id)
+  progress.draft = value
+  question.status = statusFromProgress(question.id, value)
+}
+
+function toggleChoice(value: string) {
+  const question = activeQuestion.value
+  if (!question || !question.options) return
+  const selected = question.answerDraft.split('\n').filter(Boolean)
+  const exists = selected.includes(value)
+  const next = question.type === 'multiple_choice'
+    ? exists ? selected.filter((item) => item !== value) : [...selected, value]
+    : exists ? [] : [value]
+  updateDraft(next.join('\n'))
+  const progress = questionProgress(question.id)
+  progress.selected = next.map((item) => question.options?.indexOf(item) ?? -1).filter((index) => index >= 0)
+}
+
+function selectedIndices(question: DemoQuestion): number[] {
+  const selected = question.answerDraft.split('\n').filter(Boolean)
+  return selected.map((item) => question.options?.indexOf(item) ?? -1).filter((index) => index >= 0)
+}
+
+function applyRecord(record: SubmitRecord, submitResult?: SubmitResult) {
+  const progress = questionProgress(record.questionId)
+  const stats = progress.stats || {}
+  progress.stats = stats
+  stats.attempts = (stats.attempts || 0) + 1
+  stats.last_status = record.status
+  stats.last_submitted_at = new Date().toISOString()
+  if (record.status === 'passed') {
+    stats.correct_count = (stats.correct_count || 0) + 1
+    stats.pass_count = (stats.pass_count || 0) + 1
+  }
+  if (submitResult) {
+    stats.last_submit_result = submitResult
+    stats.submit_history = stats.submit_history || []
+    stats.submit_history.push(submitResult)
+  }
+  progress.history = [...(progress.history || []), record]
+  refreshQuestions()
+  state.panelMode = 'status'
+  if (record.action === 'submit') toastRecord.value = record
+}
+
+async function runCurrentQuestion() {
+  const question = activeQuestion.value
+  const rawQuestion = activeRawQuestion.value
+  if (!question || !rawQuestion) return
+  try {
+    const result = question.type === 'code'
+      ? await fetchJson<SubmitResult>('./run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mode: 'function',
+          question_id: question.id,
+          code: question.answerDraft || question.starterCode || '',
+          function_name: question.functionName,
+          sample_cases: rawQuestion.public_tests || [],
+        }),
+      })
+      : { ok: true, is_correct: selectedIndices(question).length > 0 }
+    applyRecord(resultToRecord(question.id, 'run', result))
+    await persistProgress()
+  } catch (error) {
+    applyRecord(resultToRecord(question.id, 'run', { ok: false, error: error instanceof Error ? error.message : String(error) }))
+  }
+}
+
+async function submitCurrentQuestion() {
+  const question = activeQuestion.value
+  if (!question) return
+  try {
+    const payload = question.type === 'code'
+      ? {
+        mode: 'function',
+        question_id: question.id,
+        code: question.answerDraft || question.starterCode || '',
+        function_name: question.functionName,
+      }
+      : {
+        mode: 'answer',
+        question_id: question.id,
+        selected: selectedIndices(question),
+        submitted_at: new Date().toISOString(),
+      }
+    const submitResponse = await fetch('./submit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    if (!submitResponse.ok) throw new Error(`${submitResponse.status} ${submitResponse.statusText}`)
+    const submitResult = await submitResponse.json() as SubmitResult
+    const record = resultToRecord(question.id, 'submit', submitResult)
+    applyRecord(record, submitResult)
+    await persistProgress()
+  } catch (error) {
+    const submitResult = { ok: false, error: error instanceof Error ? error.message : String(error) }
+    const record = resultToRecord(question.id, 'submit', submitResult)
+    applyRecord(record, submitResult)
+  }
+}
+
+async function finishSession() {
+  return fetchJson('./finish', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(state.progress),
+  })
+}
+
+function startHeartbeat() {
+  if (heartbeatTimer !== undefined) return
+  heartbeatTimer = window.setInterval(() => {
+    fetch('./heartbeat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ts: Date.now() }) }).catch(() => undefined)
+  }, 15000)
+}
+
+export function useRuntimeStore() {
+  if (!loadStarted) {
+    loadStarted = true
+    load()
+    startHeartbeat()
+  }
+  return {
+    state,
+    activeQuestion,
+    activeHistory,
+    latestRecord,
+    latestRecordsByQuestion,
+    selectQuestion,
+    toggleSidebar,
+    setPanelMode,
+    updateDraft,
+    toggleChoice,
+    runCurrentQuestion,
+    submitCurrentQuestion,
+    finishSession,
+    toastRecord,
+  }
+}

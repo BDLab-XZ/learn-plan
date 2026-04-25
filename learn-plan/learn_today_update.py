@@ -15,13 +15,25 @@ from learn_feedback import (
     update_learner_model_file,
     update_patch_queue_file,
 )
+from learn_feedback.curriculum_patch import pending_patch_items
+from learn_feedback.diagnostic_update import (
+    extract_question_clusters,
+    load_questions_map,
+    print_diagnostic_summary,
+    summarize_diagnostic_progress,
+    update_diagnostic_state,
+    update_learn_plan_with_diagnostic,
+    write_feedback_artifacts,
+)
+from learn_workflow import refresh_workflow_state
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Summarize a learn-plan today session and update learn-plan.md")
     parser.add_argument("--session-dir", required=True, help="session 目录，需包含 progress.json")
     parser.add_argument("--plan-path", default="learn-plan.md", help="学习计划文件路径")
-    parser.add_argument("--project-path", help="可选 PROJECT.md 路径；仅在需要兼容旧项目记录时使用")
+    parser.add_argument("--semantic-summary-json", help="由外部 subagent 生成的 today semantic summary JSON 文件路径")
+    parser.add_argument("--semantic-diagnostic-json", help="由外部 subagent 生成的 diagnostic semantic JSON 文件路径")
     parser.add_argument("--stdout-json", action="store_true", help="额外输出 JSON 摘要")
     return parser.parse_args()
 
@@ -78,17 +90,6 @@ def summarize_mastery(progress: dict[str, Any]) -> dict[str, Any]:
         "reflection_text": reflection,
         "artifacts": artifacts,
     }
-
-
-
-def extract_question_clusters(question: dict[str, Any]) -> list[str]:
-    clusters: list[str] = []
-    for value in [question.get("cluster"), *(question.get("tags") or []), *(question.get("subskills") or [])]:
-        text = str(value or "").strip()
-        if text and text not in clusters:
-            clusters.append(text)
-    return clusters
-
 
 
 def summarize_material_alignment(progress: dict[str, Any], questions_map: dict[str, dict[str, Any]]) -> dict[str, Any]:
@@ -186,70 +187,29 @@ def summarize_material_alignment(progress: dict[str, Any], questions_map: dict[s
     }
 
 
-
-def update_diagnostic_state(progress: dict[str, Any], summary: dict[str, Any]) -> dict[str, Any]:
-    updated = json.loads(json.dumps(progress))
-    context = updated.get("context") if isinstance(updated.get("context"), dict) else {}
-    user_model = context.get("user_model") if isinstance(context.get("user_model"), dict) else {}
-    planning_state = context.get("planning_state") if isinstance(context.get("planning_state"), dict) else {}
-    diagnostic_profile = summary.get("diagnostic_profile") or {}
-    user_model["strengths"] = normalize_string_list(diagnostic_profile.get("observed_strengths"))
-    user_model["weaknesses"] = normalize_string_list(diagnostic_profile.get("observed_weaknesses"))
-    planning_state["diagnostic_status"] = diagnostic_profile.get("status") or "validated"
-    planning_state["assessment_depth"] = diagnostic_profile.get("assessment_depth")
-    planning_state["diagnostic_round_index"] = diagnostic_profile.get("round_index")
-    planning_state["diagnostic_max_rounds"] = diagnostic_profile.get("max_rounds")
-    planning_state["diagnostic_follow_up_needed"] = diagnostic_profile.get("follow_up_needed")
-    context["user_model"] = user_model
-    context["planning_state"] = planning_state
-    context["diagnostic_profile"] = diagnostic_profile
-    context["assessment_depth"] = diagnostic_profile.get("assessment_depth")
-    context["round_index"] = diagnostic_profile.get("round_index")
-    context["max_rounds"] = diagnostic_profile.get("max_rounds")
-    context["follow_up_needed"] = diagnostic_profile.get("follow_up_needed")
-    context["stop_reason"] = diagnostic_profile.get("stop_reason")
+def extract_today_contract(progress: dict[str, Any]) -> dict[str, Any]:
+    context = progress.get("context") if isinstance(progress.get("context"), dict) else {}
     snapshot = context.get("plan_source_snapshot") if isinstance(context.get("plan_source_snapshot"), dict) else {}
-    snapshot["diagnostic_profile"] = diagnostic_profile
-    snapshot["assessment_depth"] = diagnostic_profile.get("assessment_depth")
-    snapshot["round_index"] = diagnostic_profile.get("round_index")
-    snapshot["max_rounds"] = diagnostic_profile.get("max_rounds")
-    snapshot["follow_up_needed"] = diagnostic_profile.get("follow_up_needed")
-    snapshot["stop_reason"] = diagnostic_profile.get("stop_reason")
-    context["plan_source_snapshot"] = snapshot
-    updated["context"] = context
-    session = updated.get("session") if isinstance(updated.get("session"), dict) else {}
-    session["status"] = "finished"
-    session["finished_at"] = summary.get("date")
-    session["assessment_depth"] = diagnostic_profile.get("assessment_depth")
-    session["round_index"] = diagnostic_profile.get("round_index")
-    session["max_rounds"] = diagnostic_profile.get("max_rounds")
-    session["follow_up_needed"] = diagnostic_profile.get("follow_up_needed")
-    session["stop_reason"] = diagnostic_profile.get("stop_reason")
-    updated["session"] = session
-    updated["assessment_depth"] = diagnostic_profile.get("assessment_depth")
-    updated["round_index"] = diagnostic_profile.get("round_index")
-    updated["max_rounds"] = diagnostic_profile.get("max_rounds")
-    updated["follow_up_needed"] = diagnostic_profile.get("follow_up_needed")
-    updated["stop_reason"] = diagnostic_profile.get("stop_reason")
-    updated["result_summary"] = {
-        "attempted": summary.get("attempted", 0),
-        "overall": summary.get("overall"),
-        "recommended_entry_level": summary.get("recommended_entry_level"),
-        "diagnostic_profile": diagnostic_profile,
-    }
-    history = updated.get("update_history") if isinstance(updated.get("update_history"), list) else []
-    history.append({
-        "update_type": "diagnostic",
-        "updated_at": summary.get("date"),
-        "summary": {
-            "overall": summary.get("overall"),
-            "recommended_entry_level": summary.get("recommended_entry_level"),
-            "diagnostic_profile": diagnostic_profile,
-        },
-    })
-    updated["update_history"] = history[-20:]
-    return updated
 
+    def merged_dict(key: str) -> dict[str, Any]:
+        primary = context.get(key) if isinstance(context.get(key), dict) else {}
+        fallback = snapshot.get(key) if isinstance(snapshot.get(key), dict) else {}
+        return {**fallback, **primary}
+
+    def merged_list(key: str) -> list[str]:
+        return normalize_string_list(context.get(key) or snapshot.get(key) or [])
+
+    return {
+        "today_teaching_brief": merged_dict("today_teaching_brief"),
+        "lesson_review": merged_dict("lesson_review"),
+        "question_review": merged_dict("question_review"),
+        "lesson_focus_points": merged_list("lesson_focus_points"),
+        "project_tasks": merged_list("project_tasks"),
+        "project_blockers": merged_list("project_blockers"),
+        "review_targets": merged_list("review_targets"),
+        "lesson_path": context.get("lesson_path") or snapshot.get("lesson_path") or context.get("daily_plan_artifact_path") or snapshot.get("daily_plan_artifact_path"),
+        "session_theme": str((merged_dict("today_teaching_brief").get("session_theme") or context.get("topic_cluster") or progress.get("topic") or "")).strip(),
+    }
 
 
 def update_progress_state(progress: dict[str, Any], summary: dict[str, Any], *, session_dir: Path) -> dict[str, Any]:
@@ -266,12 +226,21 @@ def update_progress_state(progress: dict[str, Any], summary: dict[str, Any], *, 
     next_learning = normalize_string_list(summary.get("next_learning"))
     weaknesses = normalize_string_list(summary.get("high_freq_errors"))
     strengths = normalize_string_list(item.get("title") for item in summary.get("solved_items") or [])
+    review_gap = normalize_string_list(summary.get("review_gap"))
+    project_tasks = normalize_string_list(summary.get("project_tasks"))
+    project_blockers = normalize_string_list(summary.get("project_blockers"))
+    review_targets = normalize_string_list(summary.get("review_targets"))
+    lesson_focus_points = normalize_string_list(summary.get("lesson_focus_points"))
+    pending_review_items = normalize_string_list(summary.get("pending_review_items"))
     attempted = normalize_int(summary.get("attempted"))
     finished_at = summary.get("finished_at") or summary.get("date")
     active_cluster = str(context.get("topic_cluster") or context.get("current_day") or context.get("current_stage") or summary.get("topic") or "").strip()
+    session_theme = str(summary.get("session_theme") or active_cluster or summary.get("topic") or "").strip()
+    reviewer_verdict = summary.get("reviewer_verdict") if isinstance(summary.get("reviewer_verdict"), dict) else {}
 
-    needs_more_review = bool(weaknesses or not mastery.get("reading_done") or not mastery.get("reflection_done"))
-    can_advance = bool(attempted > 0 and not weaknesses and mastery.get("reading_done") and mastery.get("reflection_done"))
+    needs_more_review = bool(summary.get("should_review") or review_gap)
+    can_advance = bool(summary.get("can_advance") and not needs_more_review)
+    review_debt = normalize_string_list(review_gap + review_focus)
 
     learning_state.update(
         {
@@ -283,7 +252,7 @@ def update_progress_state(progress: dict[str, Any], summary: dict[str, Any], *, 
             "should_review": needs_more_review,
             "can_advance": can_advance,
             "advancement_target": next_learning[0] if next_learning and can_advance else None,
-            "next_actions": next_learning or review_focus,
+            "next_actions": (review_focus if needs_more_review else next_learning) or review_focus,
         }
     )
 
@@ -291,11 +260,11 @@ def update_progress_state(progress: dict[str, Any], summary: dict[str, Any], *, 
         {
             "stage_status": "planned" if attempted <= 0 else ("blocked_by_review" if needs_more_review else "ready_to_advance"),
             "day_status": "planned" if attempted <= 0 else ("completed_with_gaps" if needs_more_review else "completed"),
-            "review_debt": review_focus,
-            "mastered_clusters": normalize_string_list(list(progression.get("mastered_clusters") or []) + strengths),
-            "active_clusters": normalize_string_list(([active_cluster] if active_cluster else []) + list(progression.get("active_clusters") or [])),
-            "deferred_clusters": normalize_string_list(list(progression.get("deferred_clusters") or []) + weaknesses),
-            "updated_at": summary.get("finished_at") or summary.get("date"),
+            "review_debt": review_debt,
+            "mastered_clusters": normalize_string_list(list(progression.get("mastered_clusters") or []) + strengths + normalize_string_list(summary.get("covered_scope"))),
+            "active_clusters": normalize_string_list(([session_theme] if session_theme else [active_cluster] if active_cluster else []) + list(progression.get("active_clusters") or [])),
+            "deferred_clusters": normalize_string_list(list(progression.get("deferred_clusters") or []) + weaknesses + project_blockers + review_gap),
+            "updated_at": finished_at,
         }
     )
 
@@ -309,20 +278,61 @@ def update_progress_state(progress: dict[str, Any], summary: dict[str, Any], *, 
     updated["reflection"] = mastery.get("reflection_text") or updated.get("reflection")
     updated["material_alignment"] = material_alignment or updated.get("material_alignment") or {}
     context["material_alignment"] = updated["material_alignment"]
+    context["review_focus"] = review_focus
+    context["new_learning_focus"] = next_learning
+    context["today_teaching_brief"] = summary.get("today_teaching_brief") or context.get("today_teaching_brief") or {}
+    context["lesson_review"] = summary.get("lesson_review") or context.get("lesson_review") or {}
+    context["question_review"] = summary.get("question_review") or context.get("question_review") or {}
+    context["lesson_focus_points"] = lesson_focus_points
+    context["project_tasks"] = project_tasks
+    context["project_blockers"] = project_blockers
+    context["review_targets"] = review_targets
+    context["lesson_path"] = summary.get("lesson_path") or context.get("lesson_path")
+    snapshot = context.get("plan_source_snapshot") if isinstance(context.get("plan_source_snapshot"), dict) else {}
+    snapshot["today_teaching_brief"] = context["today_teaching_brief"]
+    snapshot["lesson_review"] = context["lesson_review"]
+    snapshot["question_review"] = context["question_review"]
+    snapshot["lesson_focus_points"] = lesson_focus_points
+    snapshot["project_tasks"] = project_tasks
+    snapshot["project_blockers"] = project_blockers
+    snapshot["review_targets"] = review_targets
+    if context.get("lesson_path"):
+        snapshot["lesson_path"] = context.get("lesson_path")
+    context["plan_source_snapshot"] = snapshot
     updated["context"] = context
+    updated["result_summary"] = {
+        "total": summary.get("total"),
+        "attempted": attempted,
+        "correct": normalize_int(summary.get("correct")),
+        "overall": summary.get("overall"),
+        "session_theme": session_theme,
+        "reviewer_verdict": reviewer_verdict,
+        "review_gap": review_gap,
+        "project_tasks": project_tasks[:4],
+        "review_targets": review_targets[:4],
+        "can_advance": can_advance,
+        "should_review": needs_more_review,
+    }
 
     update_history.append(
         {
             "update_type": "today",
-            "updated_at": summary.get("finished_at") or summary.get("date"),
+            "updated_at": finished_at,
+            "session_dir": str(session_dir),
             "summary": {
                 "overall": summary.get("overall"),
+                "session_theme": session_theme,
+                "reviewer_verdict": reviewer_verdict,
                 "review_focus": review_focus,
                 "next_learning": next_learning,
                 "high_freq_errors": weaknesses,
                 "mainline_progress": summary.get("mainline_progress"),
                 "supporting_gap": summary.get("supporting_gap") or [],
                 "defer_enhancement": summary.get("defer_enhancement") or [],
+                "project_tasks": project_tasks[:4],
+                "project_blockers": project_blockers[:4],
+                "review_targets": review_targets[:4],
+                "review_gap": review_gap[:6],
                 "mastery": {
                     "reading_done": mastery.get("reading_done"),
                     "session_done": mastery.get("session_done"),
@@ -331,7 +341,9 @@ def update_progress_state(progress: dict[str, Any], summary: dict[str, Any], *, 
                 },
                 "material_alignment": material_alignment,
                 "pending_review_count": summary.get("pending_review_count", 0),
-                "pending_review_items": summary.get("pending_review_items") or [],
+                "pending_review_items": pending_review_items,
+                "can_advance": can_advance,
+                "should_review": needs_more_review,
             },
         }
     )
@@ -345,157 +357,20 @@ def update_progress_state(progress: dict[str, Any], summary: dict[str, Any], *, 
     return updated
 
 
-def load_questions_map(session_dir: Path) -> dict[str, dict[str, Any]]:
-    questions_path = session_dir / "questions.json"
-    if not questions_path.exists():
-        raise FileNotFoundError(f"未找到 questions.json: {questions_path}")
-    data = read_json(questions_path)
-    items = data.get("questions") or []
-    return {item.get("id"): item for item in items if item.get("id")}
-
-
-def summarize_diagnostic_progress(progress: dict[str, Any], questions_map: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    topic = progress.get("topic") or "未命名主题"
-    question_progress = progress.get("questions") or {}
-    session = progress.get("session") or {}
-    context = progress.get("context") if isinstance(progress.get("context"), dict) else {}
-    snapshot = context.get("plan_source_snapshot") if isinstance(context.get("plan_source_snapshot"), dict) else {}
-    existing_profile = context.get("diagnostic_profile") if isinstance(context.get("diagnostic_profile"), dict) else {}
-    existing_planning_state = context.get("planning_state") if isinstance(context.get("planning_state"), dict) else {}
-
-    assessment_depth = (
-        session.get("assessment_depth")
-        or progress.get("assessment_depth")
-        or context.get("assessment_depth")
-        or snapshot.get("assessment_depth")
-        or existing_planning_state.get("assessment_depth")
-        or existing_profile.get("assessment_depth")
-    )
-    round_index = (
-        session.get("round_index")
-        or progress.get("round_index")
-        or context.get("round_index")
-        or snapshot.get("round_index")
-        or existing_planning_state.get("diagnostic_round_index")
-        or existing_profile.get("round_index")
-        or 1
-    )
-    max_rounds = (
-        session.get("max_rounds")
-        or progress.get("max_rounds")
-        or context.get("max_rounds")
-        or snapshot.get("max_rounds")
-        or existing_planning_state.get("diagnostic_max_rounds")
-        or existing_profile.get("max_rounds")
-        or round_index
-    )
-    follow_up_needed = progress.get("follow_up_needed")
-    if follow_up_needed is None:
-        follow_up_needed = context.get("follow_up_needed")
-    if follow_up_needed is None:
-        follow_up_needed = snapshot.get("follow_up_needed")
-    if follow_up_needed is None:
-        follow_up_needed = existing_planning_state.get("diagnostic_follow_up_needed")
-    if follow_up_needed is None:
-        follow_up_needed = existing_profile.get("follow_up_needed")
-    stop_reason = (
-        progress.get("stop_reason")
-        or context.get("stop_reason")
-        or snapshot.get("stop_reason")
-        or existing_profile.get("stop_reason")
+def semantic_summary_is_valid(payload: dict[str, Any] | None) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    quality_review = payload.get("quality_review") if isinstance(payload.get("quality_review"), dict) else {}
+    generation_trace = payload.get("generation_trace") if isinstance(payload.get("generation_trace"), dict) else {}
+    return bool(
+        quality_review.get("valid")
+        and normalize_string_list(payload.get("evidence") or [])
+        and generation_trace
+        and normalize_string_list(payload.get("traceability") or [])
     )
 
-    strengths: list[str] = []
-    weaknesses: list[str] = []
-    evidence: list[str] = []
-    pending_review_items: list[str] = []
-    attempted = 0
-    scorable_attempted = 0
 
-    for qid, item in question_progress.items():
-        stats = item.get("stats") or {}
-        question = questions_map.get(qid) or {}
-        title = question.get("title") or question.get("question") or qid
-        attempts = normalize_int(stats.get("attempts"))
-        if attempts <= 0:
-            continue
-        attempted += 1
-        if question.get("category") == "open":
-            pending_review_items.append(title)
-            evidence.append(f"开放题《{title}》已提交，待评阅后补充诊断结论")
-            continue
-        scorable_attempted += 1
-        success_count = normalize_int(stats.get("pass_count")) if question.get("category") == "code" else normalize_int(stats.get("correct_count"))
-        if success_count > 0:
-            strengths.append(title)
-            evidence.append(f"题目《{title}》完成良好")
-        else:
-            weaknesses.append(title)
-            evidence.append(f"题目《{title}》暴露当前薄弱点")
-
-    current_stage = context.get("current_stage") or snapshot.get("current_stage")
-    if not attempted:
-        overall = "未完成诊断"
-        recommended_entry_level = existing_profile.get("recommended_entry_level") or current_stage or "待诊断后判断"
-    elif weaknesses:
-        overall = "已形成起点判断，存在需优先补齐的基础薄弱点"
-        recommended_entry_level = existing_profile.get("recommended_entry_level") or "阶段 1"
-    elif scorable_attempted > 0 and pending_review_items:
-        overall = "已形成初步起点判断，但仍有开放题待评阅"
-        recommended_entry_level = existing_profile.get("recommended_entry_level") or current_stage or "当前阶段"
-    elif scorable_attempted > 0:
-        overall = "诊断结果显示可从当前阶段继续推进"
-        recommended_entry_level = existing_profile.get("recommended_entry_level") or current_stage or "当前阶段"
-    else:
-        overall = "已收集开放题回答，待评阅后确认起点"
-        recommended_entry_level = existing_profile.get("recommended_entry_level") or "待评阅后判断"
-
-    if follow_up_needed is None:
-        if pending_review_items and scorable_attempted <= 0:
-            follow_up_needed = True
-        elif assessment_depth == "deep" and attempted > 0:
-            follow_up_needed = bool(weaknesses and normalize_int(round_index) < normalize_int(max_rounds))
-    if not stop_reason:
-        if pending_review_items and scorable_attempted <= 0:
-            stop_reason = "pending-review"
-        elif assessment_depth == "deep":
-            if follow_up_needed:
-                stop_reason = "undetermined"
-            elif attempted > 0:
-                stop_reason = "enough-evidence"
-
-    status = "validated" if attempted > 0 and not follow_up_needed and (scorable_attempted > 0 or not pending_review_items) else "in-progress"
-
-    return {
-        "topic": topic,
-        "date": progress.get("date") or "",
-        "session_type": session.get("type") or "today",
-        "status": session.get("status") or "active",
-        "attempted": attempted,
-        "overall": overall,
-        "recommended_entry_level": recommended_entry_level,
-        "diagnostic_profile": {
-            "status": status,
-            "assessment_depth": assessment_depth,
-            "round_index": round_index,
-            "max_rounds": max_rounds,
-            "follow_up_needed": follow_up_needed,
-            "stop_reason": stop_reason,
-            "baseline_level": current_stage or topic,
-            "dimensions": [q.get("question") or q.get("title") or qid for qid, q in questions_map.items()],
-            "observed_strengths": normalize_string_list(strengths),
-            "observed_weaknesses": normalize_string_list(weaknesses),
-            "pending_review_count": len(pending_review_items),
-            "pending_review_items": normalize_string_list(pending_review_items),
-            "evidence": normalize_string_list(evidence),
-            "recommended_entry_level": recommended_entry_level,
-            "confidence": 0.8 if attempted > 0 and scorable_attempted > 0 else 0.3,
-        },
-    }
-
-
-
-def summarize_progress(progress: dict[str, Any], questions_map: dict[str, dict[str, Any]]) -> dict[str, Any]:
+def summarize_progress(progress: dict[str, Any], questions_map: dict[str, dict[str, Any]], semantic_summary: dict[str, Any] | None = None) -> dict[str, Any]:
     topic = progress.get("topic") or "未命名主题"
     session = progress.get("session") or {}
     summary = progress.get("summary") or {}
@@ -506,6 +381,14 @@ def summarize_progress(progress: dict[str, Any], questions_map: dict[str, dict[s
     context = progress.get("context") if isinstance(progress.get("context"), dict) else {}
     goal_focus = context.get("goal_focus") if isinstance(context.get("goal_focus"), dict) else {}
     progression = progress.get("progression") if isinstance(progress.get("progression"), dict) else {}
+    today_contract = extract_today_contract(progress)
+    lesson_review = today_contract.get("lesson_review") if isinstance(today_contract.get("lesson_review"), dict) else {}
+    question_review = today_contract.get("question_review") if isinstance(today_contract.get("question_review"), dict) else {}
+    teaching_brief = today_contract.get("today_teaching_brief") if isinstance(today_contract.get("today_teaching_brief"), dict) else {}
+    lesson_focus_points = normalize_string_list(today_contract.get("lesson_focus_points") or [])
+    project_tasks = normalize_string_list(today_contract.get("project_tasks") or [])
+    project_blockers = normalize_string_list(today_contract.get("project_blockers") or [])
+    review_targets = normalize_string_list(today_contract.get("review_targets") or [])
 
     total = normalize_int(result_summary.get("total") if result_summary else None) or normalize_int(summary.get("total"))
     attempted = normalize_int(result_summary.get("attempted") if result_summary else None) or normalize_int(summary.get("attempted"))
@@ -553,37 +436,38 @@ def summarize_progress(progress: dict[str, Any], questions_map: dict[str, dict[s
         for qid, item in question_progress.items()
         if normalize_int(((item or {}).get("stats") or {}).get("attempts")) > 0 and (questions_map.get(qid) or {}).get("category") == "open"
     ]
-    review_focus = high_freq_errors[:] or [f"复习 {topic} 的基础概念", f"回看 {topic} 的易错题型"]
-    if not mastery.get("reading_done"):
-        review_focus.append("补齐阅读掌握清单对应内容")
-    if not mastery.get("reflection_done"):
-        review_focus.append("补做书面/口头复盘，确认是否真正理解")
-    if pending_review_items:
-        review_focus.append("补看开放题提交内容与评阅结论，避免把待评阅题误当作已掌握")
 
-    next_learning: list[str] = []
-    if attempted == 0:
-        next_learning = [f"先完成 {topic} 的首轮练习", f"补做至少 3 道概念题和 2 道代码题"]
-    elif wrong_items:
-        next_learning = [f"先针对 {wrong_items[0]['title']} 做定点复习", f"在 {topic} 中加入 1 组同类新题巩固"]
-    else:
-        next_learning = [f"进入 {topic} 的下一批新题", f"把训练重心从基础正确率转向速度和稳定性"]
-    if not mastery.get("project_done"):
-        next_learning.append("补 1 个小项目/实作，验证知识能否迁移应用")
+    question_review_warnings = normalize_string_list(question_review.get("warnings") or [])
+    question_review_issues = normalize_string_list(question_review.get("issues") or [])
+    lesson_review_warnings = normalize_string_list(lesson_review.get("warnings") or [])
+    lesson_review_issues = normalize_string_list(lesson_review.get("issues") or [])
+    review_gap = normalize_string_list(question_review_issues + question_review_warnings + lesson_review_issues + lesson_review_warnings)
+    semantic_valid = semantic_summary_is_valid(semantic_summary)
+    semantic_summary = semantic_summary if isinstance(semantic_summary, dict) else {}
+    review_focus = normalize_string_list(semantic_summary.get("review_focus") if semantic_valid else [])
+    next_learning = normalize_string_list(semantic_summary.get("next_learning") if semantic_valid else [])
 
-    overall = "未开始"
-    if attempted > 0:
-        accuracy = correct / attempted if attempted else 0
-        if accuracy >= 0.85 and mastery.get("reading_done") and mastery.get("reflection_done"):
-            overall = "表现较稳"
-        elif accuracy >= 0.6:
-            overall = "表现中等"
-        else:
-            overall = "基础仍需巩固"
-        if accuracy >= 0.85 and not mastery.get("project_done"):
-            overall = "练习表现较稳，但应用验证不足"
-        if accuracy >= 0.85 and not mastery.get("reading_done"):
-            overall = "练习表现尚可，但阅读理解未稳固"
+    facts_indicate_review = bool(
+        review_gap
+        or high_freq_errors
+        or not mastery.get("reading_done")
+        or not mastery.get("reflection_done")
+        or pending_review_items
+    )
+    needs_more_review = bool(semantic_summary.get("should_review")) if semantic_valid else facts_indicate_review
+    can_advance = bool(semantic_summary.get("can_advance")) if semantic_valid else False
+    reviewer_verdict = {
+        "lesson": lesson_review.get("verdict"),
+        "question": question_review.get("verdict"),
+    }
+    covered_scope = normalize_string_list(
+        lesson_focus_points[:3]
+        + project_tasks[:2]
+        + [item["title"] for item in solved_items[:2]]
+    )
+
+    overall = str(semantic_summary.get("overall") or "").strip() if semantic_valid else ""
+    semantic_status = "ok" if semantic_valid else "missing_artifact"
 
     return {
         "topic": topic,
@@ -598,7 +482,10 @@ def summarize_progress(progress: dict[str, Any], questions_map: dict[str, dict[s
         "correct": correct,
         "pending_review_count": len(pending_review_items),
         "pending_review_items": normalize_string_list(pending_review_items),
-        "overall": overall,
+        "overall": overall or None,
+        "semantic_status": semantic_status,
+        "semantic_missing_requirements": ([] if semantic_valid else ["semantic_summary"]),
+        "semantic_summary": semantic_summary if semantic_valid else {},
         "high_freq_errors": high_freq_errors,
         "review_focus": normalize_string_list(review_focus),
         "next_learning": normalize_string_list(next_learning),
@@ -609,27 +496,61 @@ def summarize_progress(progress: dict[str, Any], questions_map: dict[str, dict[s
         "mainline_progress": goal_focus.get("mainline") or context.get("topic_cluster") or topic,
         "supporting_gap": normalize_string_list(goal_focus.get("supporting"))[:2] if high_freq_errors else [],
         "defer_enhancement": normalize_string_list(goal_focus.get("enhancement"))[:1] if (high_freq_errors or progression.get("review_debt")) else [],
+        "covered_scope": covered_scope,
+        "session_theme": today_contract.get("session_theme") or topic,
+        "lesson_path": today_contract.get("lesson_path"),
+        "today_teaching_brief": teaching_brief,
+        "lesson_review": lesson_review,
+        "question_review": question_review,
+        "lesson_focus_points": lesson_focus_points,
+        "project_tasks": project_tasks,
+        "project_blockers": project_blockers,
+        "review_targets": review_targets,
+        "review_gap": review_gap,
+        "reviewer_verdict": reviewer_verdict,
+        "should_review": needs_more_review,
+        "can_advance": can_advance,
     }
 
 
 def render_log_entry(summary: dict[str, Any], session_dir: Path) -> str:
     weak_text = "；".join(summary["high_freq_errors"]) if summary["high_freq_errors"] else "暂无明显高频错误"
-    review_text = "；".join(summary["review_focus"])
-    next_text = "；".join(summary["next_learning"])
+    semantic_ready = summary.get("semantic_status") == "ok"
+    review_text = "；".join(summary["review_focus"]) if semantic_ready else "缺少 semantic summary artifact"
+    next_text = "；".join(summary["next_learning"]) if semantic_ready else "缺少 semantic summary artifact"
+    overall_text = summary.get("overall") if semantic_ready else "缺少 semantic summary artifact"
     mastery = summary.get("mastery") or {}
     material_alignment = summary.get("material_alignment") if isinstance(summary.get("material_alignment"), dict) else {}
     material_text = material_alignment.get("status") or "未记录"
     if material_alignment.get("selected_segments"):
         material_text += f"（覆盖 {len(material_alignment.get('covered_segments') or [])}/{len(material_alignment.get('selected_segments') or [])} 个 segment）"
+    project_text = "；".join(normalize_string_list(summary.get("project_tasks"))[:4]) or "无"
+    review_target_text = "；".join(normalize_string_list(summary.get("review_targets"))[:4]) or "无"
+    review_gap_text = "；".join(normalize_string_list(summary.get("review_gap"))[:6]) or "无明显 reviewer 缺口"
+    reviewer_verdict = summary.get("reviewer_verdict") if isinstance(summary.get("reviewer_verdict"), dict) else {}
+    verdict_text = " / ".join(
+        part for part in [
+            f"lesson={reviewer_verdict.get('lesson')}" if reviewer_verdict.get("lesson") else "",
+            f"question={reviewer_verdict.get('question')}" if reviewer_verdict.get("question") else "",
+        ]
+        if part
+    ) or "未记录"
     return "\n".join(
         [
             f"### {summary['date']} / {summary['topic']} / 今日学习更新",
             f"- session 目录：`{session_dir}`",
+            f"- 今日主题：{summary.get('session_theme') or summary['topic']}",
+            f"- lesson 文件：`{summary.get('lesson_path') or '未记录'}`",
             f"- 总题数：{summary['total']}",
             f"- 已练习题数：{summary['attempted']}",
             f"- 正确/通过题数：{summary['correct']}",
-            f"- 总体表现：{summary['overall']}",
+            f"- 总体表现：{overall_text}",
+            f"- semantic summary 状态：{summary.get('semantic_status') or 'unknown'}",
+            f"- reviewer 结论：{verdict_text}",
             f"- 高频错误点：{weak_text}",
+            f"- 今日项目任务：{project_text}",
+            f"- 今日复习目标：{review_target_text}",
+            f"- reviewer coverage 缺口：{review_gap_text}",
             f"- 材料 segment 覆盖：{material_text}",
             f"- 阅读掌握清单：{'已达标' if mastery.get('reading_done') else '未达标'}",
             f"- session 练习/测试：{'已完成' if mastery.get('session_done') else '未完成'}",
@@ -645,26 +566,6 @@ def upsert_section(text: str, heading: str, block: str) -> str:
     return upsert_markdown_section(text, heading, block)
 
 
-def update_learn_plan_with_diagnostic(plan_path: Path, summary: dict[str, Any], session_dir: Path) -> None:
-    original = read_text_if_exists(plan_path)
-    diagnostic = summary.get("diagnostic_profile") or {}
-    block = "\n".join([
-        f"### {summary['date']} / {summary['topic']} / 前置诊断更新",
-        f"- session 目录：`{session_dir}`",
-        f"- 总体判断：{summary.get('overall')}",
-        f"- 推荐起步层级：{summary.get('recommended_entry_level')}",
-        *( [f"- 测评深度：{diagnostic.get('assessment_depth')}"] if diagnostic.get("assessment_depth") else [] ),
-        *( [f"- 诊断轮次：{diagnostic.get('round_index')} / {diagnostic.get('max_rounds')}"] if diagnostic.get("round_index") else [] ),
-        *( [f"- 是否需要追问轮次：{diagnostic.get('follow_up_needed')}"] if diagnostic.get("follow_up_needed") is not None else [] ),
-        *( [f"- 结束原因：{diagnostic.get('stop_reason')}"] if diagnostic.get("stop_reason") else [] ),
-        *( [f"- 已观察到的优势：{'；'.join(diagnostic.get('observed_strengths', []))}"] if diagnostic.get("observed_strengths") else [] ),
-        *( [f"- 已观察到的薄弱点：{'；'.join(diagnostic.get('observed_weaknesses', []))}"] if diagnostic.get("observed_weaknesses") else [] ),
-    ])
-    updated = upsert_section(original, "学习记录", block)
-    write_text(plan_path, updated)
-
-
-
 def update_learn_plan(plan_path: Path, summary: dict[str, Any], session_dir: Path) -> None:
     original = read_text_if_exists(plan_path)
     block = render_log_entry(summary, session_dir)
@@ -672,65 +573,22 @@ def update_learn_plan(plan_path: Path, summary: dict[str, Any], session_dir: Pat
     write_text(plan_path, updated)
 
 
-def update_project_log(project_path: Path, summary: dict[str, Any], session_dir: Path) -> None:
-    original = read_text_if_exists(project_path)
-    if not original and not project_path.exists():
-        return
-    block = render_log_entry(summary, session_dir)
-    updated = upsert_section(original, "Learning Progress Log", block)
-    write_text(project_path, updated)
-
-
-def write_feedback_artifacts(plan_path: Path, summary: dict[str, Any], progress: dict[str, Any], session_dir: Path, *, update_type: str) -> dict[str, Any]:
-    session_facts = build_session_facts(progress, summary, session_dir=session_dir, update_type=update_type)
-    learner_model = update_learner_model_file(plan_path, summary, session_facts, update_type=update_type)
-    patch_queue = update_patch_queue_file(plan_path, summary, session_facts, update_type=update_type)
-    return {
-        "session_facts": session_facts,
-        "learner_model": learner_model,
-        "patch_queue": patch_queue,
-    }
-
-
-
-def print_diagnostic_summary(summary: dict[str, Any], plan_path: Path, *, stdout_json: bool, feedback_result: dict[str, Any] | None = None) -> None:
-    diagnostic = summary.get("diagnostic_profile") or {}
-    print(f"主题：{summary['topic']}")
-    print(f"诊断结论：{summary.get('overall')}")
-    print(f"推荐起步层级：{summary.get('recommended_entry_level')}")
-    if diagnostic.get("assessment_depth"):
-        print(f"测评深度：{diagnostic.get('assessment_depth')}")
-    if diagnostic.get("round_index"):
-        print(f"诊断轮次：{diagnostic.get('round_index')} / {diagnostic.get('max_rounds')}")
-    if diagnostic.get("follow_up_needed") is not None:
-        print(f"是否需要追问轮次：{diagnostic.get('follow_up_needed')}")
-    if diagnostic.get("stop_reason"):
-        print(f"结束原因：{diagnostic.get('stop_reason')}")
-    print(f"已观察到的优势：{'；'.join(diagnostic.get('observed_strengths', [])) if diagnostic.get('observed_strengths') else '暂无'}")
-    print(f"已观察到的薄弱点：{'；'.join(diagnostic.get('observed_weaknesses', [])) if diagnostic.get('observed_weaknesses') else '暂无明显薄弱点'}")
-    print(f"学习计划：{plan_path}")
-    if feedback_result:
-        for line in render_feedback_output_lines(learner_model_result=feedback_result["learner_model"], patch_result=feedback_result["patch_queue"]):
-            print(line)
-    if stdout_json:
-        print(json.dumps(summary, ensure_ascii=False, indent=2))
-
-
-
-def print_summary(summary: dict[str, Any], plan_path: Path, project_path: Path | None, *, stdout_json: bool, feedback_result: dict[str, Any] | None = None) -> None:
+def print_summary(summary: dict[str, Any], plan_path: Path, *, stdout_json: bool, feedback_result: dict[str, Any] | None = None) -> None:
+    semantic_ready = summary.get("semantic_status") == "ok"
     print(f"主题：{summary['topic']}")
     print(f"总题数：{summary['total']}")
     print(f"已练习：{summary['attempted']}")
     print(f"正确/通过：{summary['correct']}")
+    print(f"semantic summary 状态：{summary.get('semantic_status') or 'unknown'}")
     print(f"高频错误点：{'；'.join(summary['high_freq_errors']) if summary['high_freq_errors'] else '暂无明显高频错误'}")
     material_alignment = summary.get("material_alignment") if isinstance(summary.get("material_alignment"), dict) else {}
     if material_alignment:
         print(f"材料 segment 覆盖：{material_alignment.get('status') or '未记录'}")
-    print(f"下次复习重点：{'；'.join(summary['review_focus'])}")
-    print(f"下次新学习建议：{'；'.join(summary['next_learning'])}")
+    review_text = "；".join(summary["review_focus"]) if semantic_ready else "缺少 semantic summary artifact"
+    next_text = "；".join(summary["next_learning"]) if semantic_ready else "缺少 semantic summary artifact"
+    print(f"下次复习重点：{review_text}")
+    print(f"下次新学习建议：{next_text}")
     print(f"学习计划：{plan_path}")
-    if project_path is not None:
-        print(f"PROJECT：{project_path}")
     if feedback_result:
         for line in render_feedback_output_lines(learner_model_result=feedback_result["learner_model"], patch_result=feedback_result["patch_queue"]):
             print(line)
@@ -746,10 +604,11 @@ def main() -> int:
         raise FileNotFoundError(f"未找到 progress.json: {progress_path}")
 
     plan_path = Path(args.plan_path).expanduser().resolve()
-    project_path = Path(args.project_path).expanduser().resolve() if args.project_path else None
 
     progress = read_json(progress_path)
     questions_map = load_questions_map(session_dir)
+    semantic_summary = read_json(Path(args.semantic_summary_json).expanduser().resolve()) if args.semantic_summary_json else None
+    semantic_diagnostic = read_json(Path(args.semantic_diagnostic_json).expanduser().resolve()) if args.semantic_diagnostic_json else None
     session = progress.get("session") if isinstance(progress.get("session"), dict) else {}
     if (
         session.get("assessment_kind") == "initial-test"
@@ -762,21 +621,35 @@ def main() -> int:
         or session.get("assessment_kind") == "plan-diagnostic"
         or (session.get("plan_execution_mode") == "diagnostic" and session.get("assessment_kind") != "initial-test")
     ):
-        summary = summarize_diagnostic_progress(progress, questions_map)
+        summary = summarize_diagnostic_progress(progress, questions_map, semantic_diagnostic=semantic_diagnostic)
         updated_progress = update_diagnostic_state(progress, summary)
         write_json(progress_path, updated_progress)
         update_learn_plan_with_diagnostic(plan_path, summary, session_dir)
         feedback_result = write_feedback_artifacts(plan_path, summary, updated_progress, session_dir, update_type="diagnostic")
+        refresh_workflow_state(plan_path)
         print_diagnostic_summary(summary, plan_path, stdout_json=args.stdout_json, feedback_result=feedback_result)
+        patch_queue = (feedback_result.get("patch_queue") or {}).get("queue")
+        if isinstance(patch_queue, dict):
+            pending_count = len(pending_patch_items(patch_queue))
+            if pending_count > 0:
+                print(f"提示：有 {pending_count} 条待审批的课程调整建议，可运行 /learn-plan 审批")
+                if args.stdout_json:
+                    print(json.dumps({"pending_patch_count": pending_count, "suggested_action": "run /learn-plan to review and approve curriculum adjustments"}, ensure_ascii=False))
         return 0
-    summary = summarize_progress(progress, questions_map)
+    summary = summarize_progress(progress, questions_map, semantic_summary=semantic_summary)
     updated_progress = update_progress_state(progress, summary, session_dir=session_dir)
     write_json(progress_path, updated_progress)
     update_learn_plan(plan_path, summary, session_dir)
     feedback_result = write_feedback_artifacts(plan_path, summary, updated_progress, session_dir, update_type="today")
-    if project_path is not None:
-        update_project_log(project_path, summary, session_dir)
-    print_summary(summary, plan_path, project_path, stdout_json=args.stdout_json, feedback_result=feedback_result)
+    refresh_workflow_state(plan_path)
+    print_summary(summary, plan_path, stdout_json=args.stdout_json, feedback_result=feedback_result)
+    patch_queue = (feedback_result.get("patch_queue") or {}).get("queue")
+    if isinstance(patch_queue, dict):
+        pending_count = len(pending_patch_items(patch_queue))
+        if pending_count > 0:
+            print(f"提示：有 {pending_count} 条待审批的课程调整建议，可运行 /learn-plan 审批")
+            if args.stdout_json:
+                print(json.dumps({"pending_patch_count": pending_count, "suggested_action": "run /learn-plan to review and approve curriculum adjustments"}, ensure_ascii=False))
     return 0
 
 

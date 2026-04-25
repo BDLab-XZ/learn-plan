@@ -12,6 +12,8 @@ from urllib.request import Request, urlopen
 from learn_core.io import read_json, write_json
 from learn_core.text_utils import sanitize_filename
 
+from .index_schema import get_index_entries, normalize_materials_index
+
 
 def resolve_download_url(material: dict[str, Any]) -> str | None:
     direct_url = str(material.get("direct_url") or "").strip()
@@ -131,27 +133,12 @@ def update_material_cache_status(material: dict[str, Any], local_path: Path, suc
     timestamp = time.strftime("%Y-%m-%dT%H:%M:%S")
     if success:
         updated["cache_status"] = "cached"
-        updated["availability"] = "cached"
-        updated["selection_status"] = "confirmed"
         updated["local_path"] = str(local_path)
         updated["cached_at"] = timestamp
-        updated["cache_note"] = message
-        updated["exists_locally"] = True
-        local_artifact = dict(updated.get("local_artifact") or {})
-        local_artifact.update(
-            {
-                "path": str(local_path),
-                "file_type": local_path.suffix.lstrip(".") or None,
-                "downloaded_at": timestamp,
-            }
-        )
-        updated["local_artifact"] = local_artifact
+        updated["last_attempt"] = timestamp
     else:
         updated["cache_status"] = "download-failed"
-        updated["availability"] = updated.get("availability") or "metadata-only"
-        updated["cache_note"] = message
         updated["last_attempt"] = timestamp
-        updated["exists_locally"] = bool(updated.get("exists_locally"))
     return updated
 
 
@@ -166,12 +153,12 @@ def process_materials(materials_dir: Path, material_id: str | None, *, force: bo
             "failed": 0,
         }
 
-    index_data = read_json(index_path)
-    entries = index_data.get("entries") or []
+    index_data = normalize_materials_index(read_json(index_path))
+    entries = get_index_entries(index_data)
     if not isinstance(entries, list):
         return {
             "success": False,
-            "message": "index.json 格式错误：entries 不是列表",
+            "message": "index.json 格式错误：entries/items 不是列表",
             "downloaded": 0,
             "skipped": 0,
             "failed": 0,
@@ -240,7 +227,7 @@ def process_materials(materials_dir: Path, material_id: str | None, *, force: bo
         updated_entries = [updated_by_id.get((entry.get("id") or "unknown"), entry) for entry in entries]
 
     if not dry_run:
-        index_data["entries"] = updated_entries
+        index_data = normalize_materials_index(index_data, entries=updated_entries)
         index_data["last_updated"] = time.strftime("%Y-%m-%dT%H:%M:%S")
         write_json(index_path, index_data)
 

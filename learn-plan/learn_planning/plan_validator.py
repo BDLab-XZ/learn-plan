@@ -47,7 +47,7 @@ def validate_plan_quality(sections: dict[str, str], materials_data: dict[str, An
     if diagnostic_status in {"in-progress", "not-started"}:
         issues.append("诊断尚未完成或缺少最小水平验证")
     diagnostic_profile = profile.get("diagnostic_profile") or {}
-    if current_mode == "finalize" and diagnostic_status == "validated":
+    if current_mode == "finalize" and diagnostic_status in {"validated", "evaluated"}:
         if not diagnostic_profile.get("evidence"):
             issues.append("diagnostic 阶段缺少 evidence，不能支撑起点判断")
         confidence = diagnostic_profile.get("confidence")

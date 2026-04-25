@@ -3,6 +3,12 @@
 本文档定义 Claude Code 在执行 `/learn-plan` skill 簇时应该如何跟随 route summary、如何调用 CLI facade、以及哪些情况必须停在当前阶段而不能继续推进。
 
 相关文档：
+- 顶层 skill 协议：`../SKILL.md`
+- clarification 阶段：`./clarification-stage.md`
+- research 阶段：`./research-stage.md`
+- diagnostic 阶段：`./diagnostic-stage.md`
+- approval 阶段：`./approval-stage.md`
+- finalize 阶段：`./finalize-stage.md`
 - 架构总览：`../WORKFLOW_DESIGN.md`
 - 契约文档：`./contracts.md`
 - 状态文件：`./state-files.md`
@@ -39,7 +45,13 @@
    - next_action
    - missing_requirements
    - quality_issues
-4. 根据 blocking_stage 执行对应 LLM 工作。
+   - stage_exit_contract
+   - stage_exit_missing_values
+   - stage_exit_user_visible_next_step
+4. 根据 blocking_stage 执行 selective subagent strategy。
+   - 主 agent 负责澄清、编排、字段映射、小范围修复和 CLI 验证。
+   - subagent 负责检索、出题、严格审题、语义审查、planning candidate 和需要独立上下文的第二意见；当前主会话不得直接调用 WebSearch/WebFetch 或直接撰写这些重语义 artifact 来替代 subagent。
+   - 若已拿到合法 JSON，优先通过 `--stage-candidate-json` / `--stage-review-json` / `--planning-candidate-json` / `--planning-review-json` 注入 `learn_plan.py`；Python 只消费 artifact、推进 gate 与落盘状态。
 5. 写入或更新对应 .learn-workflow/*.json。
 6. 再次调用 learn_plan.py --mode auto 或推荐 mode。
 7. 直到 next_action = enter:/learn-today。
@@ -51,8 +63,8 @@
 
 | `blocking_stage` | 执行器动作 | 禁止动作 |
 | --- | --- | --- |
-| `clarification` | 继续追问目标、成功标准、水平、约束、偏好 | 不进入 research / diagnostic / finalize |
-| `research` | 先给 research plan 并确认，再做能力要求报告 | 不直接诊断或规划 |
+| `clarification` | 在终端用自然语言围绕当前 consultation topic 做 1–3 个同主题开放追问；用户回答后再派 Agent 整理结构化 candidate patch | 不使用 `AskUserQuestion` / `UserQuestions` / 选择题控件；不跨主题批量问卷；不进入 research / diagnostic / finalize |
+| `research` | 先给 research plan 并确认，再派发 Agent 生成 HTML 能力要求与达标水平报告 | 不直接诊断或规划；不把报告写成学习路线 |
 | `diagnostic` | 启动现有网页 diagnostic session，等待用户在网页作答，再读取 progress.json 批改并写起点评估 | 不在终端直接文本出题；不伪造诊断结论 |
 | `approval` | 生成计划草案并让用户确认 tradeoff | 不把草案写成正式计划 |
 | `ready` | 调用 `finalize`，检查正式产物 | 不再继续问非阻塞问题 |
@@ -64,9 +76,14 @@
 ## 4.1 clarification
 
 执行器应输出：
-- 一段画像确认。
-- 3–8 个必要问题，优先问阻塞项。
-- 若用户回答模糊，把它标为 assumption 或 open question。
+- 当前画像摘要。
+- 当前聚焦的 `consultation_state.current_topic_id`。
+- 为什么这一轮只追问这个主题。
+- 当前主题已确认什么、还缺什么。
+- 同一主题下 1–3 个问题；若回答仍模糊，下一轮继续同一主题。
+- 起始测评预算是否已确认。
+
+执行器不应一次抛出跨主题大问卷；若用户暂时答不出，应记录为 assumption / open question / deferred，而不是伪造确定事实。
 
 执行器应写入：
 - `.learn-workflow/clarification.json`
@@ -84,6 +101,8 @@
    - 等用户确认
 
 2. research report：
+   - HTML 能力要求与达标水平报告
+   - 目标对应的达标带与 required level definition
    - 能力集合
    - 主线/支撑/后置能力
    - 可观察行为
@@ -91,6 +110,8 @@
    - 推荐诊断方法
    - 材料取舍依据
    - evidence / open risks
+
+报告只回答“为了达成目标，需要掌握什么能力、到什么水平、用什么证据判断”；不要展开学习路线或阶段安排。
 
 执行器应写入：
 - `.learn-workflow/research.json`
@@ -122,14 +143,17 @@ python3 "$HOME/.claude/skills/learn-plan/session_orchestrator.py" \
   --session-type test \
   --test-mode general \
   --plan-path "<root>/learn-plan.md" \
-  --session-dir "<root>/sessions/<YYYY-MM-DD>-diagnostic"
+  --session-dir "<root>/sessions/<YYYY-MM-DD>-test" \
+  --lesson-artifact-json "<Agent生成的lesson artifact>" \
+  --question-artifact-json "<Agent生成的questions artifact>" \
+  --question-review-json "<Agent生成的strict review artifact>"
 ```
 
 执行器对用户的终端回报应只保留：
 - `session_dir`
 - 浏览器访问地址
 - 手动停服命令
-- “完成作答后执行 /learn-test-update”
+- “完成作答后会自动停服、自动执行 /learn-test-update，并自动重新进入 /learn-plan；若失败再手动运行页面展示的整条命令”
 
 禁止：
 - 用户没答就写 evaluated。
@@ -191,7 +215,7 @@ python3 "$HOME/.claude/skills/learn-plan/session_orchestrator.py" \
 6. 启动服务并打开浏览器。
 
 禁止：
-- fallback 题库漂移到与当前学习无关主题却不说明。
+- 缺出题/审题 artifact 时静默 fallback 到确定性内容题或内置题库。
 - 未完成 session 就调用 test update。
 
 ---
@@ -218,7 +242,7 @@ python3 "$HOME/.claude/skills/learn-plan/session_orchestrator.py" \
 
 禁止：
 - 未经用户确认直接改长期路线主体。
-- 默认同步 `PROJECT.md`。
+- 默认不读也不同步 `PROJECT.md`。
 
 ---
 
@@ -246,7 +270,7 @@ python3 "$HOME/.claude/skills/learn-plan/session_orchestrator.py" \
 | diagnostic 未作答 | 不写 evaluated，不进入 approval |
 | approval 未明确 | 保持 draft/needs-revision |
 | finalize 质量校验失败 | 回到对应 blocking stage |
-| LLM 出题失败 | 回退 source excerpt 题，再回退内置题库 |
+| 缺出题/审题 artifact | 阻断 session 启动，重新派发 subagent 生成或修复 artifact |
 | materials 下载失败 | 标记失败，runtime 回退 metadata-only |
 | preprocessing 失败 | 不阻断 session |
 

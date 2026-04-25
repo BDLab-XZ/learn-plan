@@ -9,6 +9,7 @@ from learn_core.text_utils import normalize_string_list
 from learn_runtime.plan_source import day_matches, normalize_day_key
 from learn_runtime.source_grounding import (
     build_segment_source_brief,
+    clean_source_teaching_terms,
     segment_specificity,
     source_brief_has_substance,
 )
@@ -80,14 +81,7 @@ def prefer_precise_segments(selected_segments: list[dict[str, Any]], target_segm
 
 
 def choose_material_local_path(item: dict[str, Any]) -> Any:
-    local_path = item.get("local_path")
-    artifact_path = (item.get("local_artifact") or {}).get("path") if isinstance(item.get("local_artifact"), dict) else None
-    if artifact_path:
-        expanded_artifact = Path(str(artifact_path)).expanduser()
-        expanded_local = Path(str(local_path)).expanduser() if local_path else None
-        if expanded_artifact.exists() and (expanded_local is None or not expanded_local.exists()):
-            return artifact_path
-    return local_path or artifact_path
+    return item.get("local_path")
 
 
 def normalize_material_item(item: dict[str, Any], topic: str) -> dict[str, Any]:
@@ -105,11 +99,9 @@ def normalize_material_item(item: dict[str, Any], topic: str) -> dict[str, Any]:
         "source_type": item.get("source_type"),
         "url": item.get("url"),
         "local_path": local_path,
-        "cache_status": item.get("cache_status") or ("cached" if local_exists or item.get("exists_locally") else "metadata-only"),
-        "cache_note": item.get("cache_note"),
+        "cache_status": item.get("cache_status") or ("cached" if local_exists else "metadata-only"),
         "tags": item.get("tags") or [],
         "focus_topics": item.get("focus_topics") or [],
-        "exists_locally": local_exists or bool(item.get("exists_locally")),
         "selection_status": item.get("selection_status"),
         "availability": item.get("availability"),
         "role_in_plan": item.get("role_in_plan") or "optional",
@@ -117,7 +109,6 @@ def normalize_material_item(item: dict[str, Any], topic: str) -> dict[str, Any]:
         "capability_alignment": item.get("capability_alignment") or [],
         "reading_segments": item.get("reading_segments") or [],
         "mastery_checks": item.get("mastery_checks") or {},
-        "local_artifact": item.get("local_artifact") or {},
     }
 
 
@@ -144,7 +135,7 @@ def load_materials(plan_path: Path, topic: str) -> list[dict[str, Any]]:
             data = loaded
             break
 
-    entries = data.get("entries") or data.get("materials") or []
+    entries = data.get("entries") or data.get("items") or data.get("materials") or []
     if not isinstance(entries, list):
         return []
 
@@ -169,6 +160,29 @@ def segment_matches_day(segment: dict[str, Any], day: Any) -> bool:
     return day_matches(day, segment.get("label"))
 
 
+def build_grounded_mastery_targets(segment: dict[str, Any], material: dict[str, Any]) -> dict[str, list[str]]:
+    source_terms = clean_source_teaching_terms(
+        normalize_string_list(segment.get("source_key_points") or [])
+        + normalize_string_list(segment.get("checkpoints") or [])
+        + normalize_string_list(((segment.get("locator") or {}).get("sections") if isinstance(segment.get("locator"), dict) else []) or [])
+    )
+    material_title = str(material.get("title") or segment.get("material_title") or segment.get("label") or "这份资料").strip()
+    purpose = str(segment.get("purpose") or material.get("summary") or material.get("use") or "").strip()
+    summary = str(segment.get("source_summary") or "").strip()
+    core_terms = source_terms[:3]
+    reading_items = core_terms or ([summary] if summary else []) or ([purpose] if purpose else []) or [material_title]
+    reading_checklist = [item for item in reading_items if item][:4]
+    project_focus = "、".join(core_terms[:2]) or summary or purpose or material_title
+    reflection_focus = "、".join(core_terms[:3]) or summary or purpose or material_title
+    applied_project = [f"围绕 {project_focus} 做 1 个最小练习或场景判断"] if project_focus else []
+    reflection = [f"用自己的话解释 {reflection_focus} 在今天任务里的作用和边界"] if reflection_focus else []
+    return {
+        "reading_checklist": reading_checklist,
+        "applied_project": applied_project,
+        "reflection": reflection,
+    }
+
+
 def material_matches_recommendation(material: dict[str, Any], recommended_materials: list[str]) -> bool:
     if not recommended_materials:
         return False
@@ -185,6 +199,17 @@ def material_matches_recommendation(material: dict[str, Any], recommended_materi
     return False
 
 
+def count_term_matches(terms: list[str], text: str) -> int:
+    normalized_terms = normalize_string_list(terms)
+    normalized_text = str(text or "").lower()
+    matched: set[str] = set()
+    for term in normalized_terms:
+        lowered = str(term or "").strip().lower()
+        if lowered and lowered in normalized_text:
+            matched.add(lowered)
+    return len(matched)
+
+
 def select_material_segments(materials: list[dict[str, Any]], plan_source: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, list[str]]]:
     review_terms = normalize_string_list(plan_source.get("review") or plan_source.get("weakness_focus"))
     new_terms = normalize_string_list(plan_source.get("new_learning"))
@@ -195,6 +220,29 @@ def select_material_segments(materials: list[dict[str, Any]], plan_source: dict[
     preferred_stage = str(plan_source.get("current_stage") or "")
     preferred_day = plan_source.get("day")
     target_segment_ids = set(normalize_string_list(plan_source.get("target_segment_ids") or []))
+    target_capability_ids = normalize_string_list(
+        plan_source.get("target_capability_ids")
+        or ((plan_source.get("diagnostic_blueprint") or {}).get("target_capability_ids") if isinstance(plan_source.get("diagnostic_blueprint"), dict) else [])
+    )
+    user_model = plan_source.get("user_model") if isinstance(plan_source.get("user_model"), dict) else {}
+    diagnostic_profile = plan_source.get("diagnostic_profile") if isinstance(plan_source.get("diagnostic_profile"), dict) else {}
+    weakness_terms = normalize_string_list(
+        plan_source.get("weakness_focus")
+        or plan_source.get("progress_review_debt")
+        or user_model.get("weaknesses")
+        or diagnostic_profile.get("observed_weaknesses")
+        or []
+    )
+    review_debt_terms = normalize_string_list(
+        plan_source.get("progress_review_debt")
+        or user_model.get("review_debt")
+        or []
+    )
+    capability_priority_terms = normalize_string_list(
+        target_capability_ids
+        + supporting_terms
+        + normalize_string_list((plan_source.get("material_alignment") or {}).get("target_capability_ids") if isinstance(plan_source.get("material_alignment"), dict) else [])
+    )
     selected_segments: list[dict[str, Any]] = []
     mastery_targets = {
         "reading_checklist": [],
@@ -252,9 +300,12 @@ def select_material_segments(materials: list[dict[str, Any]], plan_source: dict[
             *review_terms,
             *new_terms,
             *exercise_terms,
+            *capability_priority_terms,
+            *weakness_terms,
+            *review_debt_terms,
         ]
     )
-    git_session = domain == "git" or text_has_any(topic_blob, GIT_POSITIVE_SIGNALS)
+    git_session = domain == "git"
     for material in materials:
         material_blob_text = material_text_blob(material)
         material_has_local_content = bool(material.get("local_path") and Path(str(material.get("local_path"))).expanduser().exists())
@@ -279,33 +330,72 @@ def select_material_segments(materials: list[dict[str, Any]], plan_source: dict[
             enhancement_match = role == "optional" and any(term and term.lower() in blob_lower for term in enhancement_terms)
             stage_match = bool(preferred_stage and preferred_stage in blob)
             combined_blob = f"{blob} {material_blob_text}"
+            combined_blob_lower = combined_blob.lower()
             segment_git_match = git_session and text_has_any(combined_blob, GIT_POSITIVE_SIGNALS)
+            capability_match_count = count_term_matches(capability_priority_terms, combined_blob_lower)
+            weakness_match_count = count_term_matches(weakness_terms, combined_blob_lower)
+            review_debt_match_count = count_term_matches(review_debt_terms, combined_blob_lower)
+            requested_signal_blob = " ".join(normalize_string_list(capability_priority_terms + weakness_terms + review_debt_terms + focus_terms)).lower()
+            target_cluster_match_count = count_term_matches(
+                normalize_string_list(segment.get("target_clusters") or []),
+                requested_signal_blob,
+            )
+            material_capability_match_count = count_term_matches(
+                normalize_string_list(material.get("capability_alignment") or []),
+                requested_signal_blob,
+            )
+            capability_strong_match = capability_match_count > 0 and (
+                count_term_matches(target_capability_ids, combined_blob_lower) > 0
+                or material_capability_match_count > 0
+                or target_cluster_match_count > 0
+            )
 
             score = 0
             reason = ""
             if explicit_match:
-                score = 100
+                score = 140
                 reason = "explicit-target-segment"
+            elif capability_strong_match and weakness_match_count > 0:
+                score = 125 + min(capability_match_count * 5, 15) + min(weakness_match_count * 4, 8)
+                reason = "target-capability+weakness"
+            elif capability_strong_match and review_debt_match_count > 0:
+                score = 118 + min(capability_match_count * 5, 15) + min(review_debt_match_count * 4, 8)
+                reason = "target-capability+review-debt"
+            elif capability_strong_match:
+                score = 108 + min(capability_match_count * 5, 20)
+                reason = "target-capability"
+            elif weakness_match_count > 0 and review_debt_match_count > 0:
+                score = 96 + min((weakness_match_count + review_debt_match_count) * 4, 16)
+                reason = "weakness+review-debt"
+            elif weakness_match_count > 0:
+                score = 90 + min(weakness_match_count * 4, 12)
+                reason = "weakness-alignment"
+            elif review_debt_match_count > 0:
+                score = 84 + min(review_debt_match_count * 4, 12)
+                reason = "review-debt-alignment"
             elif git_session and segment_git_match and day_match:
-                score = 110 if material_match or material_git_match else 95
+                score = 82 if material_match or material_git_match else 74
                 reason = "git-material+day"
             elif git_session and segment_git_match and (material_match or focus_match):
-                score = 85
+                score = 72
                 reason = "git-material+focus"
             elif git_session and segment_git_match:
-                score = 70
+                score = 62
                 reason = "git-material"
+            elif day_match and material_match:
+                score = 58
+                reason = "recommended-material+day"
             elif day_match:
-                score = 90 if material_match else 80
-                reason = "recommended-day" if not material_match else "recommended-material+day"
+                score = 52
+                reason = "recommended-day"
             elif material_match and focus_match:
-                score = 65
+                score = 48
                 reason = "recommended-material+checkpoint-overlap"
             elif focus_match:
-                score = 55
+                score = 42
                 reason = "checkpoint-overlap"
             elif support_match:
-                score = 45
+                score = 38
                 reason = "supporting-capability-overlap"
             elif enhancement_match:
                 score = 35
@@ -334,11 +424,20 @@ def select_material_segments(materials: list[dict[str, Any]], plan_source: dict[
             continue
         seen_segment_ids.add(segment_id)
         selected_segments.append(segment)
-        for checkpoint in segment.get("checkpoints") or []:
+        grounded_targets = build_grounded_mastery_targets(segment, material={
+            "title": segment.get("material_title"),
+            "summary": segment.get("material_summary"),
+            "use": segment.get("purpose"),
+        })
+        for checkpoint in grounded_targets["reading_checklist"]:
             if checkpoint not in mastery_targets["reading_checklist"]:
                 mastery_targets["reading_checklist"].append(checkpoint)
-        mastery_targets["reflection"].append(f"解释 {segment.get('label') or segment_id} 的关键概念与实际用途")
-        mastery_targets["applied_project"].append(f"基于 {segment.get('label') or segment_id} 做 1 个小练习或小项目")
+        for item in grounded_targets["reflection"]:
+            if item not in mastery_targets["reflection"]:
+                mastery_targets["reflection"].append(item)
+        for item in grounded_targets["applied_project"]:
+            if item not in mastery_targets["applied_project"]:
+                mastery_targets["applied_project"].append(item)
         if len(selected_segments) >= 4:
             break
 
@@ -355,11 +454,16 @@ def select_material_segments(materials: list[dict[str, Any]], plan_source: dict[
                 seen_segment_ids.add(segment_id)
                 selected_segment = enrich_segment(segment, material, role, match_reason="first-material-fallback", match_score=0)
                 selected_segments.append(selected_segment)
-                for checkpoint in selected_segment.get("checkpoints") or []:
+                grounded_targets = build_grounded_mastery_targets(selected_segment, material)
+                for checkpoint in grounded_targets["reading_checklist"]:
                     if checkpoint not in mastery_targets["reading_checklist"]:
                         mastery_targets["reading_checklist"].append(checkpoint)
-                mastery_targets["reflection"].append(f"解释 {selected_segment.get('label') or segment_id} 的关键概念与实际用途")
-                mastery_targets["applied_project"].append(f"基于 {selected_segment.get('label') or segment_id} 做 1 个小练习或小项目")
+                for item in grounded_targets["reflection"]:
+                    if item not in mastery_targets["reflection"]:
+                        mastery_targets["reflection"].append(item)
+                for item in grounded_targets["applied_project"]:
+                    if item not in mastery_targets["applied_project"]:
+                        mastery_targets["applied_project"].append(item)
                 break
             if len(selected_segments) >= 3:
                 break
@@ -371,16 +475,54 @@ def select_material_segments(materials: list[dict[str, Any]], plan_source: dict[
         if git_segments:
             selected_segments = git_segments
     selected_segments = prefer_precise_segments(selected_segments, target_segment_ids)
+
+    grounded_reading: list[str] = []
+    grounded_project: list[str] = []
+    grounded_reflection: list[str] = []
+    for segment in selected_segments:
+        grounded_targets = build_grounded_mastery_targets(segment, material={
+            "title": segment.get("material_title"),
+            "summary": segment.get("material_summary"),
+            "use": segment.get("purpose"),
+        })
+        for item in grounded_targets["reading_checklist"]:
+            if item not in grounded_reading:
+                grounded_reading.append(item)
+        for item in grounded_targets["applied_project"]:
+            if item not in grounded_project:
+                grounded_project.append(item)
+        for item in grounded_targets["reflection"]:
+            if item not in grounded_reflection:
+                grounded_reflection.append(item)
+    if grounded_reading:
+        mastery_targets["reading_checklist"] = grounded_reading[:6]
+    if grounded_project:
+        mastery_targets["applied_project"] = grounded_project[:4]
+    if grounded_reflection:
+        mastery_targets["reflection"] = grounded_reflection[:4]
+
     match_reasons = [str(item.get("match_reason") or "") for item in selected_segments if item.get("match_reason")]
-    aligned_reason_prefixes = ("explicit", "recommended", "checkpoint", "git-material")
+    aligned_reason_prefixes = (
+        "explicit",
+        "target-capability",
+        "weakness",
+        "review-debt",
+        "recommended",
+        "checkpoint",
+        "git-material",
+    )
     material_alignment = {
         "status": "aligned" if selected_segments and any(reason.startswith(aligned_reason_prefixes) for reason in match_reasons) else ("fallback" if selected_segments else "missing"),
         "target_day_key": normalize_day_key(preferred_day),
+        "target_capability_ids": target_capability_ids,
+        "weakness_terms": weakness_terms[:6],
+        "review_debt_terms": review_debt_terms[:6],
         "selected_segment_ids": [str(item.get("segment_id")) for item in selected_segments if item.get("segment_id")],
         "material_ids": [str(item.get("material_id")) for item in selected_segments if item.get("material_id")],
         "match_reasons": match_reasons,
         "selection_mode": (
             "exact-segment" if any(reason == "explicit-target-segment" for reason in match_reasons)
+            else "capability-driven" if any(reason.startswith(("target-capability", "weakness", "review-debt")) for reason in match_reasons)
             else "git-grounded" if any(reason.startswith("git-material") for reason in match_reasons)
             else "same-day-broad" if any(reason.startswith(("recommended", "checkpoint")) for reason in match_reasons)
             else "metadata-fallback"

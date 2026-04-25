@@ -31,7 +31,7 @@
 核心产物：
 - `learn-plan.md`：长期学习计划
 - `materials/index.json`：材料索引与缓存状态
-- `sessions/*/lesson.md`：当天讲义/教学计划
+- `learn-today-YYYY-MM-DD.md`：today 唯一正式讲解文件
 - `sessions/*/questions.json`：题目与 session 上下文
 - `sessions/*/progress.json`：练习/测试事实记录
 - `sessions/*/题集.html`：本地学习页面
@@ -69,6 +69,13 @@ learning/topic/
 
 说明：`.learn-workflow/` 存放 workflow 中间状态，普通使用时不需要手动编辑。
 
+阶段细则已拆分到独立文档：
+- clarification：`docs/clarification-stage.md`
+- research：`docs/research-stage.md`
+- diagnostic：`docs/diagnostic-stage.md`
+- approval：`docs/approval-stage.md`
+- finalize：`docs/finalize-stage.md`
+
 ### 2.2 开始每日学习
 
 ```bash
@@ -76,11 +83,13 @@ learning/topic/
 ```
 
 它会基于 `learn-plan.md`、材料索引、历史 progress 和你的当天反馈生成学习 session，通常包含：
-- `lesson.md`
-- `questions.json`
+- `<root>/learn-today-YYYY-MM-DD.md`：唯一正式讲解材料，固定为四部分：你阅读了哪些材料 / 今日重点要掌握哪些知识 / 项目驱动的知识点讲解和相关扩展 / 建议复习
+- `questions.json`：网页练习题载荷，不写入 markdown
 - `progress.json`
 - `题集.html`
 - `server.py`
+
+同时会在 payload/context 中保留 `today_teaching_brief`、`lesson_review`、`question_review`、`lesson_focus_points`、`project_tasks`、`project_blockers`、`review_targets`，供人工审查与后续 update 复用。
 
 并启动本地服务、打开浏览器。
 
@@ -92,7 +101,7 @@ learning/topic/
 
 它会读取本次 session 的 `progress.json`，汇总表现并回写 `learn-plan.md` 的学习记录区块，同时更新 `.learn-workflow/learner_model.json`，并将课程调整建议写入 `.learn-workflow/curriculum_patch_queue.json`。这些 patch 只会进入待确认队列，不会自动改长期路线。
 
-说明：如果这是由 `/learn-plan` diagnostic gate 触发的起始测试 session，则完成后应运行 `/learn-test-update`，而不是 `/learn-today-update`。
+说明：如果这是由 `/learn-plan` diagnostic gate 触发的起始测试 session，完成作答后会优先自动停服、自动执行 `/learn-test-update`，再自动重新进入 `/learn-plan`；若自动续跑失败，再手动运行页面展示的整条命令。
 
 ### 2.4 阶段测试
 
@@ -111,7 +120,7 @@ learning/topic/
 /learn-test-update
 ```
 
-它会更新测试记录、`learner_model.json` 与 `curriculum_patch_queue.json`，但不会未经确认直接重写长期阶段路线。
+它会更新测试记录、`learner_model.json` 与 `curriculum_patch_queue.json`。patch 默认先进入待确认队列；当 approval/finalize gate 放行后，`/learn-plan` 会消费已批准 patch 并写回正式计划。
 
 ### 2.5 下载学习材料
 
@@ -218,18 +227,17 @@ sessions/*/progress.json
 ```text
 learning/topic/
 ├── learn-plan.md
+├── learn-today-2026-04-02.md
 ├── materials/
 │   ├── index.json
 │   └── ...
 ├── sessions/
 │   ├── 2026-04-02/
-│   │   ├── lesson.md
 │   │   ├── questions.json
 │   │   ├── progress.json
 │   │   ├── 题集.html
 │   │   └── server.py
 │   └── 2026-04-02-test/
-│       ├── lesson.md
 │       ├── questions.json
 │       ├── progress.json
 │       ├── 题集.html

@@ -23,15 +23,20 @@ import sys
 import time
 from pathlib import Path
 from typing import Any
+
+from learn_runtime.schemas import ensure_questions_basic, validate_progress_basic
 from urllib.error import URLError
 from urllib.request import urlopen
 
-PORT = 8080
-URL = f"http://localhost:{PORT}"
+DEFAULT_PORT = 8080
 SKILL_DIR = Path(__file__).resolve().parent
+SERVER_PORT_ENV = "LEARN_PLAN_PORT"
 TEMPLATES_DIR = SKILL_DIR / "templates"
 SERVER_TEMPLATE = TEMPLATES_DIR / "server.py"
 HTML_TEMPLATE = TEMPLATES_DIR / "题集模板.html"
+RUNTIME_FRONTEND_DIST_DIR = TEMPLATES_DIR / "runtime-dist"
+RUNTIME_FRONTEND_DIST_HTML = RUNTIME_FRONTEND_DIST_DIR / "index.html"
+RUNTIME_FRONTEND_ASSETS_DIR = RUNTIME_FRONTEND_DIST_DIR / "assets"
 PROGRESS_TEMPLATE = TEMPLATES_DIR / "progress_template.json"
 SERVER_LOG = "server.log"
 
@@ -41,6 +46,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--session-dir", required=True, help="目标 session 目录")
     parser.add_argument("--questions", help="源 questions.json 路径；默认使用 <session-dir>/questions.json")
     parser.add_argument("--plan-path", default="learn-plan.md", help="写入 progress.session.plan_path")
+    parser.add_argument("--resume-topic", help="自动回流到 /learn-plan 时使用的 topic")
+    parser.add_argument("--resume-goal", help="自动回流到 /learn-plan 时使用的 goal")
+    parser.add_argument("--resume-level", help="自动回流到 /learn-plan 时使用的 level")
+    parser.add_argument("--resume-schedule", help="自动回流到 /learn-plan 时使用的 schedule")
+    parser.add_argument("--resume-preference", help="自动回流到 /learn-plan 时使用的 preference")
     parser.add_argument("--session-type", choices=["today", "test"], help="覆盖 session 类型")
     parser.add_argument(
         "--test-mode",
@@ -89,9 +99,6 @@ def find_monaco_assets(session_dir: Path) -> Path | None:
     candidates = [
         bundled,
         session_dir / "node_modules" / "monaco-editor",
-        session_dir.parent / "2026-04-07" / "node_modules" / "monaco-editor",
-        session_dir.parent / "2026-04-06" / "node_modules" / "monaco-editor",
-        session_dir.parent.parent / "1-编程基础" / "sessions" / "2026-03-28" / "node_modules" / "monaco-editor",
     ]
     for candidate in candidates:
         loader = candidate / "min" / "vs" / "loader.js"
@@ -125,21 +132,7 @@ def normalize_int(value: Any) -> int:
 
 
 def validate_questions_data(questions_data: dict[str, Any]) -> None:
-    required_top_level = ["date", "topic", "mode", "session_type", "test_mode", "plan_source", "materials", "questions"]
-    for key in required_top_level:
-        if key not in questions_data:
-            raise ValueError(f"questions.json 缺少字段: {key}")
-    questions = questions_data.get("questions")
-    if not isinstance(questions, list) or not questions:
-        raise ValueError("questions 必须是非空列表")
-    ids: set[str] = set()
-    for item in questions:
-        qid = item.get("id") if isinstance(item, dict) else None
-        if not qid:
-            raise ValueError("存在题目缺少 id")
-        if qid in ids:
-            raise ValueError(f"存在重复题目 id: {qid}")
-        ids.add(qid)
+    ensure_questions_basic(questions_data)
 
 
 def parse_difficulty_target(raw: Any) -> dict[str, Any]:
@@ -163,13 +156,14 @@ def parse_difficulty_target(raw: Any) -> dict[str, Any]:
 def build_context_snapshot(questions_data: dict[str, Any]) -> dict[str, Any]:
     plan_source = questions_data.get("plan_source") if isinstance(questions_data.get("plan_source"), dict) else {}
     topic = questions_data.get("topic") or ""
+    today_brief = dict(plan_source.get("today_teaching_brief") or {})
     today_topic = str(plan_source.get("today_topic") or "").strip()
-    topic_cluster = today_topic or topic or None
+    topic_cluster = str(today_brief.get("session_theme") or today_topic or topic or "").strip() or None
     diagnostic_profile = dict(plan_source.get("diagnostic_profile") or {})
     planning_state = dict(plan_source.get("planning_state") or {})
-    assessment_depth = plan_source.get("assessment_depth") or planning_state.get("assessment_depth") or diagnostic_profile.get("assessment_depth")
     round_index = plan_source.get("round_index") or planning_state.get("diagnostic_round_index") or diagnostic_profile.get("round_index")
     max_rounds = plan_source.get("max_rounds") or planning_state.get("diagnostic_max_rounds") or diagnostic_profile.get("max_rounds")
+    questions_per_round = plan_source.get("questions_per_round") or planning_state.get("questions_per_round") or diagnostic_profile.get("questions_per_round")
     follow_up_needed = plan_source.get("follow_up_needed")
     if follow_up_needed is None:
         follow_up_needed = planning_state.get("diagnostic_follow_up_needed")
@@ -185,8 +179,8 @@ def build_context_snapshot(questions_data: dict[str, Any]) -> dict[str, Any]:
         "current_stage": plan_source.get("current_stage"),
         "current_day": plan_source.get("day"),
         "topic_cluster": topic_cluster,
-        "review_focus": list(plan_source.get("review") or []),
-        "new_learning_focus": list(plan_source.get("new_learning") or []),
+        "review_focus": list(plan_source.get("review_targets") or plan_source.get("review") or []),
+        "new_learning_focus": list(today_brief.get("new_learning_focus") or plan_source.get("project_tasks") or plan_source.get("new_learning") or []),
         "exercise_focus": list(plan_source.get("exercise_focus") or []),
         "difficulty_target": parse_difficulty_target(plan_source.get("difficulty_target")),
         "recommended_materials": list(plan_source.get("recommended_materials") or []),
@@ -203,9 +197,9 @@ def build_context_snapshot(questions_data: dict[str, Any]) -> dict[str, Any]:
         "session_intent": questions_data.get("session_intent"),
         "assessment_kind": questions_data.get("assessment_kind"),
         "diagnostic_profile": diagnostic_profile,
-        "assessment_depth": assessment_depth,
         "round_index": round_index,
         "max_rounds": max_rounds,
+        "questions_per_round": questions_per_round,
         "follow_up_needed": follow_up_needed,
         "stop_reason": stop_reason,
         "goal_focus": {
@@ -213,7 +207,14 @@ def build_context_snapshot(questions_data: dict[str, Any]) -> dict[str, Any]:
             "supporting": list(plan_source.get("supporting_capabilities") or []),
             "enhancement": list(plan_source.get("enhancement_modules") or []),
         },
-        "lesson_path": plan_source.get("lesson_path"),
+        "today_teaching_brief": dict(plan_source.get("today_teaching_brief") or {}),
+        "lesson_review": dict(plan_source.get("lesson_review") or {}),
+        "question_review": dict(plan_source.get("question_review") or {}),
+        "review_targets": list(plan_source.get("review_targets") or []),
+        "lesson_focus_points": list(plan_source.get("lesson_focus_points") or []),
+        "project_tasks": list(plan_source.get("project_tasks") or []),
+        "project_blockers": list(plan_source.get("project_blockers") or []),
+        "lesson_path": plan_source.get("lesson_path") or plan_source.get("daily_plan_artifact_path"),
         "plan_source_snapshot": json.loads(json.dumps(plan_source)),
     }
 
@@ -310,10 +311,20 @@ def normalize_progress_data(progress: dict[str, Any], template: dict[str, Any], 
         "assessment_kind": questions_data.get("assessment_kind") or session.get("assessment_kind"),
         "plan_execution_mode": context_snapshot.get("plan_execution_mode"),
         "test_mode": test_mode,
+        "round_index": context_snapshot.get("round_index"),
+        "max_rounds": context_snapshot.get("max_rounds"),
+        "questions_per_round": context_snapshot.get("questions_per_round"),
+        "follow_up_needed": context_snapshot.get("follow_up_needed"),
+        "stop_reason": context_snapshot.get("stop_reason"),
         "status": session.get("status") if session.get("status") in {"active", "finished"} else "active",
         "started_at": session.get("started_at") or now_iso(),
         "finished_at": session.get("finished_at") if session.get("status") == "finished" else session.get("finished_at"),
         "plan_path": args.plan_path,
+        "resume_topic": args.resume_topic or session.get("resume_topic"),
+        "resume_goal": args.resume_goal or session.get("resume_goal"),
+        "resume_level": args.resume_level or session.get("resume_level"),
+        "resume_schedule": args.resume_schedule or session.get("resume_schedule"),
+        "resume_preference": args.resume_preference or session.get("resume_preference"),
         "materials": questions_data.get("materials") or [],
         "source_kind": context_snapshot.get("source_kind") or "plan-markdown-fallback",
     }
@@ -347,7 +358,7 @@ def normalize_progress_data(progress: dict[str, Any], template: dict[str, Any], 
             context[key] = value
             changed = True
 
-    for key in ("assessment_depth", "round_index", "max_rounds", "follow_up_needed", "stop_reason"):
+    for key in ("round_index", "max_rounds", "questions_per_round", "follow_up_needed", "stop_reason"):
         expected_value = context_snapshot.get(key)
         if normalized.get(key) != expected_value:
             normalized[key] = expected_value
@@ -383,16 +394,14 @@ def normalize_progress_data(progress: dict[str, Any], template: dict[str, Any], 
 def progress_shape_is_valid(progress: dict[str, Any]) -> bool:
     if not isinstance(progress, dict):
         return False
-    if not isinstance(progress.get("session"), dict):
-        return False
     if not isinstance(progress.get("summary"), dict):
         return False
     if not isinstance(progress.get("questions"), dict):
         return False
-    for key in ("date", "topic", "result_summary"):
-        if key not in progress:
+    for key in ("total", "attempted", "correct"):
+        if key not in progress["summary"]:
             return False
-    return True
+    return not validate_progress_basic(progress)
 
 
 def determine_session_state(session_dir: Path, *, session_complete_before: bool, progress_repaired: bool, runtime_overwritten: bool) -> str:
@@ -421,10 +430,21 @@ def make_progress_data(template: dict[str, Any], questions_data: dict[str, Any],
     progress["session"]["assessment_kind"] = questions_data.get("assessment_kind")
     progress["session"]["plan_execution_mode"] = context_snapshot.get("plan_execution_mode")
     progress["session"]["test_mode"] = test_mode
+    progress["session"]["round_index"] = context_snapshot.get("round_index")
+    progress["session"]["max_rounds"] = context_snapshot.get("max_rounds")
+    progress["session"]["questions_per_round"] = context_snapshot.get("questions_per_round")
+    progress["session"]["follow_up_needed"] = context_snapshot.get("follow_up_needed")
+    progress["session"]["stop_reason"] = context_snapshot.get("stop_reason")
     progress["session"]["status"] = "active"
     progress["session"]["started_at"] = now_iso()
     progress["session"]["finished_at"] = None
     progress["session"]["plan_path"] = args.plan_path
+    progress["session"]["skill_dir"] = str(SKILL_DIR)
+    progress["session"]["resume_topic"] = args.resume_topic
+    progress["session"]["resume_goal"] = args.resume_goal
+    progress["session"]["resume_level"] = args.resume_level
+    progress["session"]["resume_schedule"] = args.resume_schedule
+    progress["session"]["resume_preference"] = args.resume_preference
     progress["session"]["materials"] = questions_data.get("materials") or []
     progress["session"]["source_kind"] = context_snapshot.get("source_kind") or "plan-markdown-fallback"
     progress.setdefault("summary", {})
@@ -432,9 +452,9 @@ def make_progress_data(template: dict[str, Any], questions_data: dict[str, Any],
     progress["summary"]["attempted"] = 0
     progress["summary"]["correct"] = 0
     progress["context"] = context_snapshot
-    progress["assessment_depth"] = context_snapshot.get("assessment_depth")
     progress["round_index"] = context_snapshot.get("round_index")
     progress["max_rounds"] = context_snapshot.get("max_rounds")
+    progress["questions_per_round"] = context_snapshot.get("questions_per_round")
     progress["follow_up_needed"] = context_snapshot.get("follow_up_needed")
     progress["stop_reason"] = context_snapshot.get("stop_reason")
     progress["material_alignment"] = json.loads(json.dumps(plan_source.get("material_alignment") or template.get("material_alignment") or {}))
@@ -467,9 +487,38 @@ def port_is_busy(port: int) -> bool:
         return sock.connect_ex(("localhost", port)) == 0
 
 
-def fetch_server_info() -> dict[str, Any] | None:
+def build_url(port: int) -> str:
+    return f"http://localhost:{port}"
+
+
+def resolve_session_port(session_dir: Path) -> int:
+    port_file = session_dir / ".port"
+    if port_file.exists():
+        try:
+            saved = int(port_file.read_text(encoding="utf-8").strip())
+            if saved >= 1:
+                return saved
+        except (TypeError, ValueError):
+            pass
+    return DEFAULT_PORT
+
+
+def persist_session_port(session_dir: Path, port: int) -> None:
+    (session_dir / ".port").write_text(str(port), encoding="utf-8")
+
+
+def pick_available_port(preferred_port: int) -> int:
+    if not port_is_busy(preferred_port):
+        return preferred_port
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("localhost", 0))
+        sock.listen(1)
+        return int(sock.getsockname()[1])
+
+
+def fetch_server_info(port: int) -> dict[str, Any] | None:
     try:
-        with urlopen(f"{URL}/server-info", timeout=1.5) as resp:
+        with urlopen(f"{build_url(port)}/server-info", timeout=1.5) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except (URLError, OSError, TimeoutError, json.JSONDecodeError):
         return None
@@ -521,13 +570,18 @@ def ensure_questions_file(session_dir: Path, source_questions: Path) -> Path:
 
 
 def ensure_runtime_files(session_dir: Path, *, overwrite: bool) -> bool:
+    if not RUNTIME_FRONTEND_DIST_HTML.exists():
+        raise FileNotFoundError(
+            f"Vue runtime build missing: {RUNTIME_FRONTEND_DIST_HTML}. Run `npm run build --prefix {SKILL_DIR / 'frontend'}` first."
+        )
     changed_server = copy_file(SERVER_TEMPLATE, session_dir / "server.py", overwrite=overwrite)
-    changed_html = copy_file(HTML_TEMPLATE, session_dir / "题集.html", overwrite=overwrite)
+    changed_html = copy_file(RUNTIME_FRONTEND_DIST_HTML, session_dir / "题集.html", overwrite=overwrite)
+    changed_assets = copy_tree(RUNTIME_FRONTEND_ASSETS_DIR, session_dir / "assets", overwrite=overwrite)
     monaco_src = find_monaco_assets(session_dir)
     changed_monaco = False
     if monaco_src is not None:
         changed_monaco = copy_tree(monaco_src, session_dir / "node_modules" / "monaco-editor", overwrite=overwrite)
-    return changed_server or changed_html or changed_monaco
+    return changed_server or changed_html or changed_assets or changed_monaco
 
 
 def ensure_progress_file(session_dir: Path, questions_data: dict[str, Any], args: argparse.Namespace) -> tuple[Path, bool]:
@@ -557,36 +611,37 @@ def is_complete_session(session_dir: Path) -> bool:
     return progress_shape_is_valid(progress)
 
 
-def start_server(session_dir: Path) -> tuple[bool, str]:
-    info = fetch_server_info() if port_is_busy(PORT) else None
+def start_server(session_dir: Path) -> tuple[bool, str, int]:
+    preferred_port = resolve_session_port(session_dir)
+    info = fetch_server_info(preferred_port) if port_is_busy(preferred_port) else None
     if info:
         base_dir = info.get("base_dir")
         if base_dir and Path(base_dir).resolve() == session_dir.resolve():
-            return True, "already_running"
-        return False, f"端口 {PORT} 已被其他进程占用：{base_dir or 'unknown'}"
-    if port_is_busy(PORT):
-        process = inspect_listening_process(PORT)
-        if process:
-            return False, f"端口 {PORT} 已被占用，当前监听进程 PID={process['pid']}，命令={process['command_line']}"
-        return False, f"端口 {PORT} 已被占用，无法启动 session 服务"
+            persist_session_port(session_dir, preferred_port)
+            return True, "already_running", preferred_port
+    port = pick_available_port(preferred_port)
+    persist_session_port(session_dir, port)
 
     log_path = session_dir / SERVER_LOG
     with log_path.open("ab") as log_file:
+        env = dict(os.environ)
+        env[SERVER_PORT_ENV] = str(port)
         subprocess.Popen(
             ["conda", "run", "-n", "base", "python", "server.py"],
             cwd=session_dir,
             stdout=log_file,
             stderr=subprocess.STDOUT,
             start_new_session=True,
+            env=env,
         )
 
     deadline = time.time() + 12
     while time.time() < deadline:
-        info = fetch_server_info()
+        info = fetch_server_info(port)
         if info and Path(info.get("base_dir", "")).resolve() == session_dir.resolve():
-            return True, "started"
+            return True, ("started" if port == preferred_port else f"started_on_port_{port}"), port
         time.sleep(0.2)
-    return False, f"服务未在预期时间内启动，可查看日志：{log_path}"
+    return False, f"服务未在预期时间内启动，可查看日志：{log_path}", port
 
 
 def open_browser(url: str) -> None:
@@ -602,6 +657,7 @@ def print_summary(
     *,
     should_start: bool,
     session_state: str,
+    port: int,
 ) -> None:
     server_path = session_dir / "server.py"
     html_path = session_dir / "题集.html"
@@ -614,17 +670,16 @@ def print_summary(
     print(f"服务文件：{server_path}")
     print(f"日志文件：{log_path}")
     print(f"session 状态：{session_state}")
-    print("启动命令：conda run -n base python server.py")
+    print(f"启动命令：{SERVER_PORT_ENV}={port} conda run -n base python server.py")
     print(f"手动停服命令：{stop_command}")
     if should_start:
-        print(f"浏览器访问：{URL}")
+        print(f"浏览器访问：{build_url(port)}")
         print(f"服务状态：{start_status if started else 'failed'}")
-        if not started and "端口 8080" in start_status:
-            process = inspect_listening_process(PORT)
+        if not started and f"端口 {port}" in start_status:
+            process = inspect_listening_process(port)
             print(f"目标 session：{session_dir}")
             if process:
                 print(f"端口占用进程：PID={process['pid']} | {process['command_line']}")
-            print("切换建议：当前仅支持单端口单 session；我应先告诉用户当前是什么进程占用 8080，并在用户确认后再协助停掉它，然后启动学习服务")
     else:
         print("服务状态：skipped")
 
@@ -655,10 +710,11 @@ def main() -> int:
 
     started = False
     start_status = "not_started"
+    port = resolve_session_port(session_dir)
     if not args.no_start:
-        started, start_status = start_server(session_dir)
+        started, start_status, port = start_server(session_dir)
         if started and not args.no_open:
-            open_browser(URL)
+            open_browser(build_url(port))
 
     print_summary(
         session_dir,
@@ -668,6 +724,7 @@ def main() -> int:
         start_status,
         should_start=not args.no_start,
         session_state=session_state,
+        port=port,
     )
 
     if not args.no_start and not started:

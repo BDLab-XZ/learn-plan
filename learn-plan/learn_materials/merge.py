@@ -5,6 +5,14 @@ from pathlib import Path
 from typing import Any
 
 
+LEGACY_RUNTIME_FIELDS = {
+    "cache_note",
+    "downloaded_at",
+    "exists_locally",
+    "local_artifact",
+}
+
+
 def merge_reading_segments(default_segments: list[dict[str, Any]], existing_segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
     merged_by_id: dict[str, dict[str, Any]] = {}
     ordered_ids: list[str] = []
@@ -47,12 +55,8 @@ def merge_material_entries(existing_entries: list[dict[str, Any]], default_entri
     }
     runtime_preferred_fields = {
         "cache_status",
-        "cache_note",
-        "exists_locally",
-        "local_artifact",
         "cached_at",
         "last_attempt",
-        "downloaded_at",
     }
     for item in existing_entries:
         if isinstance(item, dict) and item.get("id"):
@@ -73,14 +77,14 @@ def merge_material_entries(existing_entries: list[dict[str, Any]], default_entri
         merged_item["topic"] = item.get("topic")
         merged_item["domain"] = item.get("domain")
         merged_item["local_path"] = item.get("local_path")
+        for legacy_field in LEGACY_RUNTIME_FIELDS:
+            merged_item.pop(legacy_field, None)
         merged[item["id"]] = merged_item
         local_path = merged[item["id"]].get("local_path")
         if local_path:
             exists_locally = Path(local_path).exists()
-            merged[item["id"]]["exists_locally"] = exists_locally
             if exists_locally:
                 merged[item["id"]]["cache_status"] = "cached"
-                merged[item["id"]]["cache_note"] = "已检测到本地缓存文件"
             else:
                 merged[item["id"]].setdefault("cache_status", "metadata-only")
     return list(merged.values())

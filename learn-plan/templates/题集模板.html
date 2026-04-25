@@ -366,11 +366,12 @@
       justify-content: space-between;
       gap: 10px;
       align-items: center;
+      min-width: 0;
     }
 
-    .q-title { font-size: 14px; font-weight: 800; }
-    .q-meta { display: flex; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 12px; }
-    .q-tags { display: flex; gap: 6px; flex-wrap: wrap; }
+    .q-title { font-size: 14px; font-weight: 800; min-width: 0; overflow-wrap: anywhere; }
+    .q-meta { display: flex; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 12px; min-width: 0; }
+    .q-tags { display: flex; gap: 6px; flex-wrap: wrap; min-width: 0; }
 
     .dashboard-main {
       display: flex;
@@ -701,6 +702,27 @@
       overflow: hidden;
     }
 
+    .problem-page.sidebar-collapsed {
+      grid-template-columns: 58px 1fr;
+    }
+
+    .problem-page.sidebar-collapsed .sidebar {
+      width: 58px;
+    }
+
+    .problem-page.sidebar-collapsed .sidebar-head .strong,
+    .problem-page.sidebar-collapsed .sidebar-home-btn,
+    .problem-page.sidebar-collapsed .question-list {
+      display: none;
+    }
+
+    .sidebar-toggle-btn {
+      width: 100%;
+      justify-content: center;
+      border-radius: 12px;
+      padding: 8px 10px;
+    }
+
     .problem-main {
       display: flex;
       flex-direction: column;
@@ -844,6 +866,8 @@
       display: grid;
       gap: 12px;
       margin-bottom: 24px;
+      min-width: 0;
+      overflow-wrap: anywhere;
     }
 
     .problem-title-meta {
@@ -862,6 +886,8 @@
       margin-top: 4px;
       position: relative;
       z-index: 1;
+      min-width: 0;
+      overflow-wrap: anywhere;
     }
 
     .problem-inline-actions {
@@ -953,6 +979,58 @@
       color: color-mix(in srgb, var(--text) 94%, var(--muted));
       font-size: 15px;
       margin-bottom: 22px;
+    }
+
+    .rich-text {
+      display: grid;
+      gap: 12px;
+    }
+
+    .rich-text p {
+      margin: 0;
+      line-height: 1.9;
+    }
+
+    .rich-text-list {
+      margin: 0;
+      padding-left: 22px;
+      display: grid;
+      gap: 8px;
+    }
+
+    .rich-text-code-block {
+      margin: 0;
+      padding: 14px 16px;
+      border-radius: 14px;
+      border: 1px solid var(--border);
+      background: color-mix(in srgb, var(--mono-bg) 94%, var(--surface) 6%);
+      color: var(--mono-fg);
+      overflow: auto;
+      white-space: pre;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 13px;
+      line-height: 1.7;
+    }
+
+    .rich-text-inline-code {
+      padding: 2px 6px;
+      border-radius: 7px;
+      background: color-mix(in srgb, var(--mono-bg) 88%, var(--surface) 12%);
+      color: var(--mono-fg);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: .92em;
+    }
+
+    .rich-text-formula {
+      display: inline-flex;
+      align-items: center;
+      padding: 1px 7px;
+      border-radius: 999px;
+      border: 1px solid color-mix(in srgb, var(--blue) 28%, var(--border) 72%);
+      background: color-mix(in srgb, var(--blue) 8%, transparent);
+      color: color-mix(in srgb, var(--text) 94%, var(--blue) 6%);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: .92em;
     }
 
     .problem-card-soft,
@@ -1322,21 +1400,6 @@
       gap: 6px;
     }
 
-    .concept-explanation-card {
-      border: 1px solid color-mix(in srgb, var(--border) 88%, transparent);
-      border-radius: 18px;
-      background: linear-gradient(180deg, color-mix(in srgb, var(--surface) 97%, var(--surface-2) 3%) 0%, color-mix(in srgb, var(--surface-2) 90%, transparent) 100%);
-      padding: 16px 18px;
-      line-height: 1.85;
-      display: grid;
-      gap: 10px;
-      box-shadow: 0 12px 30px rgba(0,0,0,.05);
-    }
-
-    .concept-explanation-card.hidden {
-      display: none;
-    }
-
     .feedback-overlay {
       position: fixed;
       inset: 0;
@@ -1455,6 +1518,8 @@
       gap: 8px;
       flex-wrap: wrap;
       margin-top: 10px;
+      min-width: 0;
+      overflow-wrap: anywhere;
     }
 
     .problem-inline-subtitle {
@@ -1784,8 +1849,6 @@
     </div>
     <div class="top-right">
       <div class="top-action-tray">
-        <button class="btn utility hidden" id="toggleConceptExplanationBtn">查看解析</button>
-        <button class="btn utility hidden" id="clearConceptDraftBtn">清空记录</button>
         <button class="btn ghost" id="themeBtn">主题</button>
         <button class="btn primary" id="doneBtn">结束学习</button>
       </div>
@@ -1875,8 +1938,8 @@
         <aside class="sidebar">
           <div class="sidebar-head">
             <button class="btn ghost sidebar-home-btn" id="sidebarHomeBtn">← 返回主页</button>
+            <button class="btn ghost sidebar-toggle-btn" id="sidebarToggleBtn">收起</button>
             <div class="strong">题目目录</div>
-            <div class="muted">显示次数 / 结果状态 / 最近状态</div>
           </div>
           <div class="question-list" id="problemQuestionList"></div>
         </aside>
@@ -1887,6 +1950,7 @@
             <div class="tabs">
               <div class="tab active" id="problemDescriptionTab">题目描述</div>
               <div class="tab" id="historyTabTrigger">提交记录</div>
+              <div class="tab" id="statusTabTrigger">答题状态</div>
             </div>
           </div>
 
@@ -1903,9 +1967,6 @@
         <aside class="history-list">
           <div class="history-head">
             <button class="btn ghost history-back-btn" id="historyBackBtn">← 返回题目</button>
-            <span class="mini-chip">所有状态</span>
-            <span class="mini-chip">全部类型</span>
-            <span class="mini-chip">时间倒序</span>
           </div>
           <div class="records" id="recordList"></div>
         </aside>
@@ -1920,7 +1981,6 @@
       <div class="summary-page">
         <div class="panel">
           <h2 style="margin-top:0;">本次学习摘要</h2>
-          <p class="muted">你可以在这里查看本次 session 的统计、后续建议和手动停服信息。</p>
         </div>
         <div class="summary-inline" id="doneStats"></div>
         <div class="panel" id="doneContent"></div>
@@ -1950,15 +2010,13 @@
       heartbeatTimer: null,
       conceptDrafts: {},
       writtenDrafts: {},
-      conceptUi: {
-        explanationVisible: false
-      },
       codeDrafts: {},
       monacoReady: false,
       monacoLoadPromise: null,
       monacoEditor: null,
       serverInfo: null,
-      isFinishing: false
+      isFinishing: false,
+      sidebarCollapsed: false
     };
 
     const els = {
@@ -1987,9 +2045,7 @@
       feedbackBadge: document.getElementById('feedbackBadge'),
       feedbackTitle: document.getElementById('feedbackTitle'),
       feedbackCopy: document.getElementById('feedbackCopy'),
-      feedbackActions: document.getElementById('feedbackActions'),
-      toggleConceptExplanationBtn: document.getElementById('toggleConceptExplanationBtn'),
-      clearConceptDraftBtn: document.getElementById('clearConceptDraftBtn')
+      feedbackActions: document.getElementById('feedbackActions')
     };
 
     const pages = {
@@ -1999,43 +2055,14 @@
       done: document.getElementById('donePage')
     };
 
-    function hasConceptAnswerRecord(questionId) {
-      const history = getQuestionProgress(questionId).history || [];
-      return history.some(item => item && item.type === 'answer');
-    }
-
-    function hasConceptExplanation(question) {
-      return !!question && typeof question.explanation === 'string' && question.explanation.trim().length > 0;
-    }
-
-    function syncConceptTopbarButtons(question = null) {
-      const toggleBtn = els.toggleConceptExplanationBtn;
-      const clearBtn = els.clearConceptDraftBtn;
-      const explanationAllowed = !!question && isConceptQuestion(question) && hasConceptExplanation(question) && hasConceptAnswerRecord(question.id);
-      const showConceptTools = !!question && isConceptQuestion(question) && pages.problem?.classList.contains('active');
-      if (toggleBtn) {
-        toggleBtn.classList.toggle('hidden', !explanationAllowed);
-        if (!explanationAllowed) state.conceptUi.explanationVisible = false;
-        toggleBtn.textContent = state.conceptUi.explanationVisible ? '收起解析' : '查看解析';
-      }
-      if (clearBtn) {
-        clearBtn.classList.toggle('hidden', !showConceptTools);
-      }
+    function syncConceptTopbarButtons() {
+      return;
     }
 
     function getCurrentConceptQuestion() {
       const question = getQuestionById(state.currentQuestionId);
       if (!question || !isConceptQuestion(question)) return null;
       return question;
-    }
-
-    function rerenderCurrentConceptQuestion() {
-      const question = getCurrentConceptQuestion();
-      if (!question) {
-        syncConceptTopbarButtons(null);
-        return;
-      }
-      renderConceptPage(question);
     }
 
     function showPage(name) {
@@ -2056,21 +2083,13 @@
       document.body.classList.toggle('light');
       applyTheme();
     });
-    els.toggleConceptExplanationBtn?.addEventListener('click', () => {
-      const question = getCurrentConceptQuestion();
-      if (!question) return;
-      state.conceptUi.explanationVisible = !state.conceptUi.explanationVisible;
-      rerenderCurrentConceptQuestion();
-    });
-    els.clearConceptDraftBtn?.addEventListener('click', () => {
-      const question = getCurrentConceptQuestion();
-      if (!question) return;
-      clearAllConceptDrafts();
-      rerenderCurrentConceptQuestion();
-    });
     document.getElementById('historyTabTrigger').addEventListener('click', () => {
       state.problemPanelMode = 'history';
       state.currentRecordIndex = 0;
+      renderProblemPage();
+    });
+    document.getElementById('statusTabTrigger')?.addEventListener('click', () => {
+      state.problemPanelMode = 'status';
       renderProblemPage();
     });
     document.getElementById('problemDescriptionTab')?.addEventListener('click', () => {
@@ -2079,6 +2098,10 @@
     });
     document.getElementById('problemHomeBtn')?.addEventListener('click', () => showPage('dashboard'));
     document.getElementById('sidebarHomeBtn')?.addEventListener('click', () => showPage('dashboard'));
+    document.getElementById('sidebarToggleBtn')?.addEventListener('click', () => {
+      state.sidebarCollapsed = !state.sidebarCollapsed;
+      syncSidebarCollapsedState();
+    });
     document.getElementById('doneBtn').addEventListener('click', () => finishSession());
 
     document.querySelectorAll('[data-filter]').forEach(btn => {
@@ -2090,11 +2113,26 @@
       });
     });
 
-    function syncProblemTabs() {
+    function syncProblemTabs() { const statusTab = document.getElementById('statusTabTrigger');
       const descriptionTab = document.getElementById('problemDescriptionTab');
       const historyTab = document.getElementById('historyTabTrigger');
-      descriptionTab?.classList.toggle('active', state.problemPanelMode !== 'history');
-      historyTab?.classList.toggle('active', state.problemPanelMode === 'history');
+      const mode = state.problemPanelMode || 'description';
+      descriptionTab?.classList.toggle('active', mode === 'description');
+      historyTab?.classList.toggle('active', mode === 'history');
+      statusTab?.classList.toggle('active', mode === 'status');
+    }
+
+    function syncSidebarCollapsedState() {
+      const page = document.querySelector('#problemPage .problem-page');
+      const button = document.getElementById('sidebarToggleBtn');
+      if (page) page.className = state.sidebarCollapsed ? 'problem-page sidebar-collapsed' : 'problem-page';
+      if (button) button.textContent = state.sidebarCollapsed ? '展开' : '收起';
+    }
+
+    function switchToStatusTab() {
+      state.problemPanelMode = 'status';
+      state.currentRecordIndex = 0;
+      renderProblemPage();
     }
 
     function escapeHtml(str) {
@@ -2102,6 +2140,79 @@
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;');
+    }
+
+    function renderRichInline(text) {
+      return escapeHtml(text)
+        .replace(/`([^`]+)`/g, '<code class="rich-text-inline-code">$1</code>')
+        .replace(/\$([^$]+)\$/g, '<span class="rich-text-formula">$1</span>');
+    }
+
+    function renderRichText(value) {
+      const text = String(value || '').trim();
+      if (!text) return '<div class="muted">暂无说明。</div>';
+      const lines = text.split(/\r?\n/);
+      const blocks = [];
+      let paragraph = [];
+      let listItems = [];
+      let codeLines = [];
+      let inCode = false;
+
+      const flushParagraph = () => {
+        if (!paragraph.length) return;
+        blocks.push(`<p>${renderRichInline(paragraph.join(' '))}</p>`);
+        paragraph = [];
+      };
+      const flushList = () => {
+        if (!listItems.length) return;
+        blocks.push(`<ul class="rich-text-list">${listItems.map(item => `<li>${renderRichInline(item)}</li>`).join('')}</ul>`);
+        listItems = [];
+      };
+      const flushCode = () => {
+        if (!codeLines.length) return;
+        blocks.push(`<pre class="rich-text-code-block"><code>${escapeHtml(codeLines.join('\n'))}</code></pre>`);
+        codeLines = [];
+      };
+
+      lines.forEach(rawLine => {
+        const line = rawLine.trimEnd();
+        if (line.trim().startsWith('```')) {
+          if (inCode) {
+            flushCode();
+            inCode = false;
+          } else {
+            flushParagraph();
+            flushList();
+            inCode = true;
+          }
+          return;
+        }
+        if (inCode) {
+          codeLines.push(rawLine);
+          return;
+        }
+        if (!line.trim()) {
+          flushParagraph();
+          flushList();
+          return;
+        }
+        const listMatch = line.trim().match(/^[-*]\s+(.+)$/);
+        if (listMatch) {
+          flushParagraph();
+          listItems.push(listMatch[1]);
+          return;
+        }
+        flushList();
+        paragraph.push(line.trim());
+      });
+      flushParagraph();
+      flushList();
+      flushCode();
+      return `<div class="rich-text">${blocks.join('')}</div>`;
+    }
+
+    function renderProblemBody(value) {
+      return renderRichText(value);
     }
 
     function getQuestionById(id) {
@@ -2206,6 +2317,8 @@
 
     function getEditorValue() {
       if (state.monacoEditor) return state.monacoEditor.getValue();
+      const fallback = document.getElementById('fallbackCodeEditor');
+      if (fallback) return fallback.value;
       return '';
     }
 
@@ -2273,17 +2386,6 @@
       });
     }
 
-    function clearConceptDraft(id) {
-      state.conceptDrafts[id] = {
-        selected: []
-      };
-    }
-
-    function clearAllConceptDrafts() {
-      state.conceptDrafts = {};
-      state.writtenDrafts = {};
-    }
-
     function detectProjectMode(planSource = {}) {
       const review = planSource.review || [];
       const newLearning = planSource.new_learning || [];
@@ -2336,17 +2438,6 @@
       return state.questionsData?.test_mode ?? getSessionMeta().test_mode ?? null;
     }
 
-    function getAssessmentDepth() {
-      const context = getProgressContext();
-      const snapshot = context.plan_source_snapshot && typeof context.plan_source_snapshot === 'object' ? context.plan_source_snapshot : {};
-      return getSelectionContext().assessment_depth
-        ?? state.questionsData?.plan_source?.assessment_depth
-        ?? getSessionMeta().assessment_depth
-        ?? context.assessment_depth
-        ?? snapshot.assessment_depth
-        ?? null;
-    }
-
     function getDiagnosticRoundInfo() {
       const context = getProgressContext();
       const snapshot = context.plan_source_snapshot && typeof context.plan_source_snapshot === 'object' ? context.plan_source_snapshot : {};
@@ -2375,12 +2466,6 @@
         || getSessionIntent() === 'plan-diagnostic';
     }
 
-    function formatAssessmentDepth(depth) {
-      if (depth === 'simple') return '简单测评';
-      if (depth === 'deep') return '深度测评';
-      return depth ? String(depth) : '';
-    }
-
     function formatOpenReviewStatus(status) {
       const text = String(status || '').trim();
       if (!text || text === 'pending' || text === 'submitted' || text === 'pending-review') return '待评阅';
@@ -2391,27 +2476,36 @@
     function renderDiagnosticSignalChips() {
       if (!isInitialTestSession()) return '';
       const chips = ['<span class="mini-chip tag-accent">起始测试</span>'];
-      const depth = formatAssessmentDepth(getAssessmentDepth());
       const { roundIndex, maxRounds, hasRounds } = getDiagnosticRoundInfo();
-      if (depth) chips.push(`<span class="mini-chip tag-neutral">${escapeHtml(depth)}</span>`);
+      const questionsPerRound = getSelectionContext().questions_per_round ?? state.questionsData?.plan_source?.questions_per_round ?? getSessionMeta().questions_per_round ?? getProgressContext().questions_per_round ?? null;
       if (hasRounds) chips.push(`<span class="mini-chip tag-neutral">第 ${roundIndex} / ${maxRounds} 轮</span>`);
+      if (questionsPerRound) chips.push(`<span class="mini-chip tag-neutral">每轮 ${questionsPerRound} 题</span>`);
       return `<div class="problem-tag-row" style="margin-top:14px;">${chips.join('')}</div>`;
     }
 
     function renderDiagnosticCallout() {
-      if (!isInitialTestSession()) return '';
-      return `
-        <div class="problem-card-soft" style="margin-top:18px;">
-          <div class="strong" style="margin-bottom:8px;">起始测试说明</div>
-          <div class="muted" style="line-height:1.7;">当前为起始测试 session，结果会用于判断入口层级与后续学习计划，不等同于阶段测试通过/未通过结论。</div>
-        </div>
-      `;
+      return '';
+    }
+
+    function normalizeQuestionType(type) {
+      const raw = String(type || '').trim();
+      const legacyMap = { single: 'single_choice', multi: 'multiple_choice', judge: 'true_false' };
+      return legacyMap[raw] || raw;
+    }
+
+    function isUnsupportedConceptType(question) {
+      if (!isConceptQuestion(question)) return false;
+      return !['single_choice', 'multiple_choice', 'true_false'].includes(normalizeQuestionType(question.type));
     }
 
     function getQuestionTypeLabel(question) {
       if (isCodeQuestion(question)) return '代码题';
       if (isOpenQuestion(question)) return '开放题';
-      return question.type === 'single' ? '单选题' : question.type === 'multi' ? '多选题' : '判断题';
+      const qtype = normalizeQuestionType(question.type);
+      if (qtype === 'single_choice') return '单选题';
+      if (qtype === 'multiple_choice') return '多选题';
+      if (qtype === 'true_false') return '判断题';
+      return '题型契约错误';
     }
 
     function summarizeQuestionTitle(text, fallback = '未命名题目') {
@@ -2476,18 +2570,7 @@
     }
 
     function getHeroDescription() {
-      if (isInitialTestSession()) {
-        const depthText = formatAssessmentDepth(getAssessmentDepth());
-        const { roundIndex, maxRounds, hasRounds } = getDiagnosticRoundInfo();
-        const roundText = hasRounds ? `，当前第 ${roundIndex} / ${maxRounds} 轮` : '';
-        return `当前为${depthText || '起始'}测试${roundText}，题目结果会持续写入 progress.json，并由 learn_test_update 解释为起步层级与后续规划结论。`;
-      }
-      if (getSessionType() === 'test') {
-        const testMode = getTestMode();
-        const modeText = testMode === 'weakness-focused' ? '薄弱项测试' : testMode === 'mixed' ? '混合测试' : '通用测试';
-        return `当前为${modeText}，题目结果会持续写入 progress.json，可在结束测试后执行 update 流程。`;
-      }
-      return '当前为学习 session，题目结果会持续写入 progress.json，可在结束学习后执行 update 流程。';
+      return '';
     }
 
     async function loadServerInfo() {
@@ -2564,6 +2647,7 @@
         if (!res.ok) throw new Error('finish failed');
         const data = await res.json();
         if (data?.progress) state.progressData = data.progress;
+        state.finishResult = data || null;
         renderDonePage();
       } catch (_) {
         renderDonePage();
@@ -2664,6 +2748,41 @@
 
     function statusLabel(stats, question) {
       return `最近：${getQuestionStatusText(stats, question)}`;
+    }
+
+    function statusBadgeHtml(status) {
+      const text = status || '未提交';
+      const cls = status === 'passed' || status === 'correct' ? 'green' : status === 'wrong' || status === 'failed' ? 'red' : status === 'submitted' || status === 'pending' ? 'orange' : 'blue';
+      return `<span class="badge ${cls}">${escapeHtml(text)}</span>`;
+    }
+
+    function renderAnswerStatusPanel(question, progress, stats, detailsHtml = '') {
+      const { attempts, accuracy, reviewStatus } = accuracyText(stats || {}, question);
+      const historyCount = (progress?.history || []).length;
+      const statusText = isOpenQuestion(question) ? (reviewStatus || stats?.last_status || '未提交') : (stats?.last_status || '未提交');
+      const metricLabel = isCodeQuestion(question) ? '通过率' : isOpenQuestion(question) ? '评阅状态' : '正确率';
+      const metricValue = isOpenQuestion(question) ? formatOpenReviewStatus(reviewStatus || stats?.last_status) : `${accuracy}%`;
+      return `
+        <div class="problem-title-block" style="margin-bottom:18px;">
+          <div>
+            <div class="muted" style="margin-bottom:8px;">答题状态</div>
+            <h2 style="margin:0; font-size:clamp(24px, 2vw, 30px); line-height:1.2;">${escapeHtml(getQuestionDisplayTitle(question))}</h2>
+          </div>
+          <div class="problem-inline-stats">
+            <span class="problem-inline-stat">次数 ${attempts}</span>
+            <span class="problem-inline-stat">${metricLabel} ${escapeHtml(metricValue || '--')}</span>
+            <span class="problem-inline-stat">记录 ${historyCount} 条</span>
+            <span class="problem-inline-stat">状态 ${statusText}</span>
+          </div>
+        </div>
+        <div class="problem-card-soft">
+          <div class="console-row">
+            <div class="strong">最近状态</div>
+            ${statusBadgeHtml(statusText)}
+          </div>
+          ${detailsHtml || '<div class="muted" style="margin-top:12px;">提交后这里会显示最近一次作答状态。</div>'}
+        </div>
+      `;
     }
 
     function accuracyText(stats, question) {
@@ -2793,12 +2912,8 @@
     async function renderDashboardHeatmap() {
       const container = document.getElementById('dashboardHeatmap');
       if (!container) return;
-      if (!state.hasProject) {
-        container.innerHTML = '<div class="muted" style="grid-column:1 / -1; font-size:12px; line-height:1.7;">学习系统默认不依赖 PROJECT.md。若后续需要长期训练热力图，应直接基于 sessions 下的历史 progress 生成。</div>';
-        return;
-      }
-      if (state.projectMode !== 'long-term') {
-        container.innerHTML = '<div class="muted" style="grid-column:1 / -1; font-size:12px; line-height:1.7;">当前更像单个主题训练，多天热力图意义不大，可暂不启用。</div>';
+      if (!state.hasProject || state.projectMode !== 'long-term') {
+        container.innerHTML = '';
         return;
       }
       try {
@@ -2807,7 +2922,7 @@
         const items = data.items || [];
         container.innerHTML = items.map(item => `<span class="heat-cell ${item.level ? `l${item.level}` : ''}" title="${item.date}｜练习 ${item.attempted}｜正确 ${item.correct}"></span>`).join('');
       } catch (_) {
-        container.innerHTML = '<div class="muted" style="grid-column:1 / -1; font-size:12px; line-height:1.7;">热力图历史数据加载失败。</div>';
+        container.innerHTML = '';
       }
     }
 
@@ -2829,21 +2944,17 @@
         const recent = findMostRecentRecord();
         els.statRecent.textContent = recent ? recent.submitted_at?.slice(11, 16) || '--' : '--';
         els.planIntro.innerHTML = [
-          ...(plan_source.review || []).map(item => `<li>复习：${item}</li>`),
-          ...(plan_source.new_learning || []).map(item => `<li>新学习：${item}</li>`)
-        ].join('') || `<li>本次${getSessionLabel()} session 未读取到长期训练计划，按当前主题直接生成。</li>`;
-        els.todoHint.innerHTML = state.hasProject
-          ? (state.projectMode === 'long-term'
-              ? '当前目录存在 PROJECT.md，但学习系统默认不再依赖它。若后续要做长期训练，应优先基于 learn-plan.md 与 sessions 历史扩展热力图。'
-              : '虽然存在 PROJECT.md，但当前学习系统默认不依赖它。若后续要做长期训练，应优先基于 learn-plan.md 与 sessions 历史扩展热力图。')
-          : '学习系统默认不依赖 PROJECT.md。若后续要做长期训练，应优先基于 learn-plan.md 与 sessions 历史扩展热力图。';
+          ...(plan_source.review || []).map(item => `<li>${item}</li>`),
+          ...(plan_source.new_learning || []).map(item => `<li>${item}</li>`)
+        ].join('');
+        els.todoHint.innerHTML = '';
         await renderDashboardHeatmap();
         renderDashboardQuestions();
       } catch (error) {
         console.error('首页渲染失败', error);
         els.dashboardTopic.textContent = '加载失败';
         if (els.heroDesc) {
-          els.heroDesc.textContent = `首页渲染失败：${error?.message || error}`;
+          els.heroDesc.textContent = '';
         }
       }
     }
@@ -2857,36 +2968,32 @@
       const diagnosticCallout = renderDiagnosticCallout();
       const draft = getConceptDraft(question.id);
       const selectedSet = new Set((draft.selected || []).map(Number));
-      const explanationVisible = !!state.conceptUi.explanationVisible;
       syncConceptTopbarButtons(question);
 
       const displayTitle = getQuestionDisplayTitle(question);
       const bodyText = getQuestionBodyText(question);
-      const optionsHtml = question.type === 'judge'
-        ? [
-            { label: '正确', desc: '点击后提交判断结果' },
-            { label: '错误', desc: '点击后提交判断结果' }
-          ].map((opt, i) => `
-            <div class="concept-option-card concept-opt ${selectedSet.has(i) ? 'selected' : ''}" data-index="${i}">
-              <div class="concept-option-mark">${i === 0 ? '✓' : '✗'}</div>
-              <div class="concept-option-copy"><div class="strong">${opt.label}</div><div class="muted">${opt.desc}</div></div>
-            </div>
-          `).join('')
-        : (question.options || []).map((opt, i) => `
-            <div class="concept-option-card concept-opt ${selectedSet.has(i) ? 'selected' : ''}" data-index="${i}">
-              <div class="concept-option-mark">${String.fromCharCode(65 + i)}</div>
-              <div class="concept-option-copy"><div>${opt}</div></div>
-            </div>
-          `).join('');
-
-      const recentHistorySummary = (progress.history || []).slice(0, 3).map((item, idx) => `
-        <div class="problem-card-soft" style="margin-bottom:0; padding:12px 14px;">
-          <div style="display:flex; justify-content:space-between; gap:8px; flex-wrap:wrap; align-items:center;">
-            <span class="badge ${item.is_correct ? 'green' : 'red'}">${item.is_correct ? '正确' : '错误'}</span>
-            <span class="muted">${formatTime(item.submitted_at)}</span>
-          </div>
-        </div>
-      `).join('') || '<div class="muted">暂无最近记录</div>';
+      const qtype = normalizeQuestionType(question.type);
+      const isTrueFalseQuestion = qtype === 'true_false';
+      const isMultipleChoiceQuestion = qtype === 'multiple_choice';
+      const unsupportedConceptType = isUnsupportedConceptType(question);
+      const optionsHtml = unsupportedConceptType
+        ? `<div class="problem-card-soft"><span class="badge red">题型契约错误</span><p class="muted" style="margin:10px 0 0;">当前题型 ${escapeHtml(String(question.type || ''))} 不属于 single_choice / multiple_choice / true_false，已阻止默认按判断题渲染。</p></div>`
+        : isTrueFalseQuestion
+          ? [
+              { label: '正确' },
+              { label: '错误' }
+            ].map((opt, i) => `
+              <div class="concept-option-card concept-opt ${selectedSet.has(i) ? 'selected' : ''}" data-index="${i}">
+                <div class="concept-option-mark">${i === 0 ? '✓' : '✗'}</div>
+                <div class="concept-option-copy"><div class="strong">${opt.label}</div></div>
+              </div>
+            `).join('')
+          : (question.options || []).map((opt, i) => `
+              <div class="concept-option-card concept-opt ${selectedSet.has(i) ? 'selected' : ''}" data-index="${i}">
+                <div class="concept-option-mark">${String.fromCharCode(65 + i)}</div>
+                <div class="concept-option-copy"><div>${opt}</div></div>
+              </div>
+            `).join('');
 
       const conceptHistoryHtml = (progress.history || []).length
         ? `
@@ -2902,7 +3009,7 @@
                 <span class="problem-inline-stat">总记录 ${(progress.history || []).length}</span>
               </div>
             </div>
-            <div class="problem-body-copy" style="margin:0 0 18px;">${escapeHtml(bodyText).replace(/\n/g, '<br>')}</div>
+            <div class="problem-body-copy" style="margin:0 0 18px;">${renderProblemBody(bodyText)}</div>
             <div style="display:grid; gap:10px; margin-bottom:18px;">${(progress.history || []).map((item, idx) => `<div class="record"><div class="record-top"><span class="badge ${item.is_correct ? 'green' : 'red'}">${item.is_correct ? '正确' : '错误'}</span><span class="muted">${formatTime(item.submitted_at)}</span></div><div class="record-meta"><span>概念题作答</span><span>#${idx + 1}</span></div></div>`).join('')}</div>
           `
         : `
@@ -2913,13 +3020,23 @@
                 <div class="problem-tag-row">${conceptTags}</div>
               </div>
             </div>
-            <div class="problem-body-copy" style="margin:0 0 18px;">${escapeHtml(bodyText).replace(/\n/g, '<br>')}</div>
+            <div class="problem-body-copy" style="margin:0 0 18px;">${renderProblemBody(bodyText)}</div>
             <div class="problem-card-soft"><div class="muted">暂无提交记录</div></div>
           `;
 
+      const latestConceptRecord = (progress.history || [])[0];
+      const conceptStatusHtml = renderAnswerStatusPanel(question, progress, stats, latestConceptRecord ? `
+        <div class="console-list" style="margin-top:12px;">
+          <div class="console-list-item">
+            <div class="console-row"><div class="strong">最近一次作答</div><span class="badge ${latestConceptRecord.is_correct ? 'green' : 'red'}">${latestConceptRecord.is_correct ? '正确' : '错误'}</span></div>
+            <div class="console-log">时间：${formatTime(latestConceptRecord.submitted_at)}</div>
+          </div>
+        </div>
+      ` : '');
+
       els.problemInfo.innerHTML = `
         <div class="problem-left-scroll">
-          ${state.problemPanelMode === 'history' ? conceptHistoryHtml : `
+          ${state.problemPanelMode === 'status' ? conceptStatusHtml : state.problemPanelMode === 'history' ? conceptHistoryHtml : `
             <div class="problem-title-block">
               <div>
                 <div class="muted" style="margin-bottom:8px;">${getQuestionTypeLabel(question)}</div>
@@ -2928,12 +3045,8 @@
                 ${diagnosticSignalChips}
               </div>
             </div>
-            <div class="problem-body-copy" style="margin:18px 0 0;">${escapeHtml(bodyText).replace(/\n/g, '<br>')}</div>
+            <div class="problem-body-copy" style="margin:18px 0 0;">${renderProblemBody(bodyText)}</div>
             ${diagnosticCallout}
-            <div class="concept-explanation-card ${explanationVisible ? '' : 'hidden'}" id="conceptExplanationCard" style="margin-top:18px;">
-              <div class="strong">题目解析</div>
-              <div>${escapeHtml(question.explanation || '暂无解析。').replace(/\n/g, '<br>')}</div>
-            </div>
           `}
         </div>
       `;
@@ -2942,7 +3055,6 @@
         <div class="concept-shell" style="padding-top:20px;">
           <div class="problem-title-block" style="margin-bottom:8px;">
             <div>
-              <div class="muted" style="margin-bottom:8px;">作答区</div>
               <div class="problem-tag-row">
                 <span class="problem-inline-stat">作答 ${attempts} 次</span>
                 <span class="problem-inline-stat">正确率 ${accuracy}%</span>
@@ -2952,30 +3064,16 @@
           </div>
           <div class="concept-options">${optionsHtml}</div>
           <div class="concept-actions">
-            <button class="btn primary" id="submitConceptBtn">提交答案</button>
-          </div>
-          <div class="concept-meta-grid" style="margin-top:18px;">
-            <div class="concept-summary-grid compact">
-              <div class="concept-summary-card">
-                <div class="muted">最近状态</div>
-                <div>${stats.last_status === 'correct' ? '<span class="badge green">答对</span>' : stats.last_status === 'wrong' ? '<span class="badge red">答错</span>' : '<span class="badge blue">未作答</span>'}</div>
-              </div>
-            </div>
-            <div class="concept-history-panel">
-              <div class="heat-card-head" style="margin-bottom:0;">
-                <div class="strong">作答记录摘要</div>
-                <span class="badge blue">总记录 ${(progress.history || []).length}</span>
-              </div>
-              <div class="concept-history-preview">${recentHistorySummary}</div>
-            </div>
+            <button class="btn primary" id="submitConceptBtn" ${unsupportedConceptType ? 'disabled' : ''}>提交答案</button>
           </div>
         </div>
       `;
 
       els.problemWorkspace.querySelectorAll('.concept-opt').forEach(opt => {
         opt.addEventListener('click', () => {
+          if (unsupportedConceptType) return;
           const index = Number(opt.dataset.index);
-          if (question.type === 'multi') {
+          if (isMultipleChoiceQuestion) {
             const next = new Set((draft.selected || []).map(Number));
             if (next.has(index)) next.delete(index);
             else next.add(index);
@@ -2988,6 +3086,7 @@
       });
 
       document.getElementById('submitConceptBtn')?.addEventListener('click', async () => {
+        if (unsupportedConceptType) return;
         const selected = (draft.selected || []).map(Number);
         if (!selected.length) return;
         const qp = getQuestionProgress(question.id);
@@ -3024,11 +3123,11 @@
           copy: is_correct ? '很好，当前这道概念题已经答对了。你可以关闭继续看题，或者直接进入下一题。' : '这道题还没答对。你可以关闭弹层继续看当前页面，或者直接再试一次。',
           actions: is_correct
             ? [
-                { label: '关闭', onClick: () => closeFeedbackModal() },
+                { label: '关闭', onClick: () => { closeFeedbackModal(); switchToStatusTab(); } },
                 ...(nextId ? [{ label: '下一道题', primary: true, onClick: () => { closeFeedbackModal(); state.currentQuestionId = nextId; renderProblemPage(); } }] : [])
               ]
             : [
-                { label: '关闭', onClick: () => closeFeedbackModal() },
+                { label: '关闭', onClick: () => { closeFeedbackModal(); switchToStatusTab(); } },
                 { label: '再试一次', primary: true, onClick: () => closeFeedbackModal() }
               ]
         });
@@ -3075,8 +3174,10 @@
       const stats = progress.stats || {};
       const { attempts, accuracy } = accuracyText(stats, question);
       const starter = getCodeDraft(question.id, question.starter_code || `def ${question.function_name || 'solve'}(...):\n    pass`).code;
-      const cases = question.test_cases || [];
-      const signature = starter.split('\n')[0] || '';
+      const cases = question.public_tests || question.test_cases || [];
+      const examples = question.examples || cases;
+      const constraints = Array.isArray(question.constraints) ? question.constraints : [];
+      const signature = question.function_signature || starter.split('\n')[0] || '';
       const panelMode = state.problemPanelMode || 'description';
 
       const summaryBadges = `
@@ -3088,11 +3189,20 @@
         </div>
       `;
 
-      const exampleBlocks = cases.map((item, idx) => `
+      const exampleBlocks = examples.map((item, idx) => `
         <div class="example-block">
           <div class="strong" style="margin-bottom:8px;">示例 ${idx + 1}</div>
           <div class="muted">输入：${escapeHtml(JSON.stringify(item.input ?? item.input_code ?? item.args ?? []))}</div>
-          <div class="muted" style="margin-top:6px;">输出：${escapeHtml(JSON.stringify(item.expected ?? item.output ?? item.expected_code ?? ''))}</div>
+          <div class="muted" style="margin-top:6px;">输出：${escapeHtml(JSON.stringify(item.output ?? item.expected ?? item.expected_code ?? ''))}</div>
+          ${item.explanation ? `<div class="muted" style="margin-top:6px;">解释：${escapeHtml(item.explanation)}</div>` : ''}
+        </div>
+      `).join('');
+
+      const publicTestBlocks = cases.map((item, idx) => `
+        <div class="example-block">
+          <div class="strong" style="margin-bottom:8px;">公开用例 ${idx + 1}</div>
+          <div class="muted">输入：${escapeHtml(JSON.stringify(item.input ?? item.input_code ?? item.args ?? []))}</div>
+          <div class="muted" style="margin-top:6px;">期望：${escapeHtml(JSON.stringify(item.expected ?? item.output ?? item.expected_code ?? ''))}</div>
         </div>
       `).join('');
 
@@ -3129,9 +3239,19 @@
           `
         : '<div class="muted">暂无选中记录</div>';
 
+      const lastSubmitResult = stats.last_submit_result || null;
+      const codeStatusHtml = renderAnswerStatusPanel(question, progress, stats, lastSubmitResult ? `
+        <div class="console-grid" style="margin-top:12px;">
+          <div class="console-metric"><div class="label">公开用例</div><div class="value">${lastSubmitResult.passed_public_count || 0}/${lastSubmitResult.total_public_count || 0}</div></div>
+          <div class="console-metric"><div class="label">隐藏用例</div><div class="value">${lastSubmitResult.passed_hidden_count || 0}/${lastSubmitResult.total_hidden_count || 0}</div></div>
+          <div class="console-metric"><div class="label">失败类型</div><div class="value">${escapeHtml((lastSubmitResult.failure_types || []).join(', ') || '--')}</div></div>
+        </div>
+        <div class="console-list" style="margin-top:12px;">${(lastSubmitResult.failed_case_summaries || []).map((item, idx) => `<div class="console-list-item"><div class="console-row"><div class="strong">失败用例 ${idx + 1}</div><span class="badge red">${escapeHtml(item.category || 'failed')}</span></div>${item.input != null ? `<div class="console-log">input: ${escapeHtml(JSON.stringify(item.input))}</div>` : ''}${item.error ? `<div class="console-log">error: ${escapeHtml(item.error)}</div>` : ''}${item.actual_repr != null ? `<div class="console-log">actual: ${escapeHtml(item.actual_repr)}</div>` : ''}${item.expected != null ? `<div class="console-log">expected: ${escapeHtml(JSON.stringify(item.expected))}</div>` : ''}</div>`).join('') || '<div class="console-log">最近一次提交没有失败用例摘要。</div>'}</div>
+      ` : '');
+
       const historyDetailHtml = `
         <div class="problem-left-scroll">
-          ${panelMode === 'description' ? `
+          ${panelMode === 'status' ? codeStatusHtml : panelMode === 'description' ? `
             <div class="problem-title-block">
               <div>
                 <div class="muted" style="margin-bottom:8px;">LeetCode 风格函数题</div>
@@ -3143,12 +3263,20 @@
               </div>
               ${summaryBadges}
             </div>
-            <div class="problem-section-title">Function Signature</div>
+            <div class="problem-section-title">函数签名</div>
             <div class="signature-box">${escapeHtml(signature)}</div>
-            <div class="problem-section-title">Description</div>
-            <div class="problem-body-copy">${escapeHtml(question.description || question.prompt || '').replace(/\n/g, '<br>')}</div>
-            <div class="problem-section-title">Examples</div>
+            <div class="problem-section-title">题目描述</div>
+            <div class="problem-body-copy">${renderProblemBody(question.problem_statement || question.description || question.prompt || '')}</div>
+            <div class="problem-section-title">输入说明</div>
+            <div class="problem-content-block">${renderProblemBody(question.input_spec || '见示例输入。')}</div>
+            <div class="problem-section-title">输出说明</div>
+            <div class="problem-content-block">${renderProblemBody(question.output_spec || '见示例输出。')}</div>
+            <div class="problem-section-title">约束</div>
+            <div class="problem-content-block">${constraints.length ? `<ul>${constraints.map(item => `<li>${escapeHtml(item)}</li>`).join('')}</ul>` : '<div class="muted">暂无约束说明。</div>'}</div>
+            <div class="problem-section-title">示例</div>
             ${exampleBlocks || '<div class="example-block"><div class="muted">暂无示例。</div></div>'}
+            <div class="problem-section-title">公开测试</div>
+            ${publicTestBlocks || '<div class="example-block"><div class="muted">暂无公开测试。</div></div>'}
           ` : `
             <div class="problem-title-block" style="margin-bottom:18px;">
               <div>
@@ -3170,31 +3298,7 @@
 
       els.problemInfo.innerHTML = historyDetailHtml;
 
-      els.problemWorkspace.innerHTML = `
-        ${renderEditor(starter, question)}
-        <section class="workspace-bottom-panel">
-          <div class="workspace-status-bar">
-            <div class="strong">运行 / 提交结果</div>
-            <span class="badge ${stats.last_status === 'passed' || stats.last_status === 'correct' ? 'green' : stats.last_status === 'wrong' ? 'red' : stats.last_status === 'submitted' ? 'orange' : 'blue'}">${stats.last_status || '未提交'}</span>
-          </div>
-          <div class="result-panel">
-            <div class="result-col" id="codeResultPanel">
-              <div class="console-block">
-                <div class="console-row">
-                  <div class="strong">控制台摘要</div>
-                  <span class="badge ${stats.last_status === 'passed' || stats.last_status === 'correct' ? 'green' : stats.last_status === 'wrong' ? 'red' : stats.last_status === 'submitted' ? 'orange' : 'blue'}">${stats.last_status || '未提交'}</span>
-                </div>
-                <div class="console-grid">
-                  <div class="console-metric"><div class="label">总提交</div><div class="value">${attempts}</div></div>
-                  <div class="console-metric"><div class="label">通过率</div><div class="value">${accuracy}%</div></div>
-                  <div class="console-metric"><div class="label">测试数</div><div class="value">${cases.length}</div></div>
-                </div>
-                <div class="console-log">点击“运行”显示预览，点击“提交”记录本次代码与状态。</div>
-              </div>
-            </div>
-          </div>
-        </section>
-      `;
+      els.problemWorkspace.innerHTML = renderEditor(starter, question);
 
       els.problemInfo.querySelectorAll('.record').forEach(node => {
         node.addEventListener('click', () => {
@@ -3204,26 +3308,25 @@
         });
       });
 
-      const topTabs = {
-        description: document.getElementById('problemDescriptionTab'),
-        history: document.getElementById('historyTabTrigger')
-      };
-      topTabs.description?.classList.toggle('active', state.problemPanelMode === 'description');
-      topTabs.history?.classList.toggle('active', state.problemPanelMode === 'history');
+      syncProblemTabs();
 
       mountMonacoEditor(question.id, starter, question.editor_language || 'python').then(() => {
         applyTheme();
       }).catch(() => {
         const container = document.getElementById('monacoEditor');
+        const draft = getCodeDraft(question.id, starter);
         if (container) {
-          container.innerHTML = '<div class="muted" style="padding:18px;">Monaco 加载失败，请刷新页面后重试。</div>';
+          container.innerHTML = `<textarea id="fallbackCodeEditor" class="editor-textarea" spellcheck="false">${escapeHtml(draft.code || starter || '')}</textarea>`;
+          document.getElementById('fallbackCodeEditor')?.addEventListener('input', event => {
+            draft.code = event.target.value;
+          });
         }
       });
 
       document.getElementById('runCodeBtn')?.addEventListener('click', async () => {
         const code = getEditorValue();
-        const col = document.getElementById('codeResultPanel');
-        if (col) col.innerHTML = '<div class="console-block"><div class="console-row"><div class="strong">运行中</div><span class="badge blue">运行</span></div><div class="console-log">正在执行示例预览...</div></div>';
+        state.problemPanelMode = 'status';
+        syncProblemTabs();
         try {
           const res = await fetch('./run', {
             method: 'POST',
@@ -3256,34 +3359,28 @@
           if (!state.progressData.questions) state.progressData.questions = {};
           state.progressData.questions[question.id] = qp;
           await syncProgressData();
-          if (col) {
-            col.innerHTML = `
-              <div class="console-block">
-                <div class="console-row">
-                  <div class="strong">运行结果</div>
-                  <span class="badge ${data.error ? 'red' : 'blue'}">${data.error ? '运行失败' : '运行预览'}</span>
-                </div>
-                <div class="console-log">${escapeHtml(data.result_repr || data.stdout || data.error || data.stderr || '已完成语法检查。')}</div>
-              </div>`;
-          }
+          state.problemPanelMode = 'status';
+          state.currentRecordIndex = 0;
+          renderProblemPage();
         } catch (error) {
-          if (col) col.innerHTML = '<div class="console-block"><div class="console-row"><div class="strong">运行失败</div><span class="badge red">错误</span></div><div class="console-log">无法连接本地服务。</div></div>';
+          state.problemPanelMode = 'status';
+          renderProblemPage();
         }
       });
 
       document.getElementById('submitCodeBtn')?.addEventListener('click', async () => {
         const code = getEditorValue();
-        const col = document.getElementById('codeResultPanel');
-        if (col) col.innerHTML = '<div class="console-block"><div class="console-row"><div class="strong">提交中</div><span class="badge orange">提交</span></div><div class="console-log">正在评测测试用例...</div></div>';
+        state.problemPanelMode = 'status';
+        syncProblemTabs();
         try {
           const res = await fetch('./submit', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({
               mode: 'function',
+              question_id: question.id,
               code,
-              function_name: question.function_name,
-              test_cases: cases
+              function_name: question.function_name
             })
           });
           const result = await res.json();
@@ -3294,11 +3391,28 @@
           qp.stats.last_status = result.all_passed ? 'passed' : 'wrong';
           if (result.all_passed) qp.stats.pass_count = (qp.stats.pass_count || 0) + 1;
           qp.stats.last_submitted_at = new Date().toISOString();
+          const submitResult = {
+            question_id: question.id,
+            question_type: 'code',
+            status: result.all_passed ? 'passed' : 'failed',
+            passed_public_count: result.passed_public_count || 0,
+            total_public_count: result.total_public_count || 0,
+            passed_hidden_count: result.passed_hidden_count || 0,
+            total_hidden_count: result.total_hidden_count || 0,
+            failed_case_summaries: result.failed_case_summaries || [],
+            failure_types: result.failure_types || [],
+            capability_tags: question.capability_tags || question.tags || [],
+            submitted_at: qp.stats.last_submitted_at,
+          };
+          qp.stats.last_submit_result = submitResult;
+          if (!Array.isArray(qp.stats.submit_history)) qp.stats.submit_history = [];
+          qp.stats.submit_history.push(submitResult);
           qp.history.unshift({
             type: 'submit',
             code,
             submitted_at: qp.stats.last_submitted_at,
             result: {
+              ...submitResult,
               passed: result.all_passed,
               passed_count: result.passed_count,
               total_count: result.total_count,
@@ -3308,21 +3422,9 @@
           if (!state.progressData.questions) state.progressData.questions = {};
           state.progressData.questions[question.id] = qp;
           await syncProgressData({ recomputeSummary: true });
-          if (col) {
-            col.innerHTML = `
-              <div class="console-block">
-                <div class="console-row">
-                  <div class="strong">提交结果</div>
-                  <span class="badge ${result.all_passed ? 'green' : 'red'}">${result.all_passed ? '通过' : '未通过'}</span>
-                </div>
-                <div class="console-grid">
-                  <div class="console-metric"><div class="label">通过数</div><div class="value">${result.passed_count}/${result.total_count}</div></div>
-                  <div class="console-metric"><div class="label">提交次数</div><div class="value">${qp.stats.attempts}</div></div>
-                  <div class="console-metric"><div class="label">最近时间</div><div class="value">${formatTime(qp.stats.last_submitted_at)}</div></div>
-                </div>
-                <div class="console-list">${(result.results || []).map((item, idx) => `<div class="console-list-item"><div class="console-row"><div class="strong">Case ${item.case || idx + 1}</div><span class="badge ${item.passed ? 'green' : 'red'}">${item.passed ? '通过' : '失败'}</span></div>${item.error ? `<div class="console-log">${escapeHtml(item.error)}</div>` : ''}${item.actual_repr != null ? `<div class="console-log">actual: ${escapeHtml(item.actual_repr)}</div>` : item.actual != null ? `<div class="console-log">actual: ${escapeHtml(item.actual)}</div>` : ''}${item.expected_repr != null ? `<div class="console-log">expected: ${escapeHtml(item.expected_repr)}</div>` : item.expected != null ? `<div class="console-log">expected: ${escapeHtml(item.expected)}</div>` : ''}</div>`).join('') || '<div class="console-log">没有返回详细测试结果。</div>'}</div>
-              </div>`;
-          }
+          state.problemPanelMode = 'status';
+          state.currentRecordIndex = 0;
+          renderProblemPage();
           const nextId = getNextQuestionId(question.id);
           openFeedbackModal({
             success: result.all_passed,
@@ -3330,16 +3432,17 @@
             copy: result.all_passed ? '很好，这道代码题已经通过全部测试。你可以继续看结果细节，或者直接进入下一题。' : '这次提交还没有全部通过。你可以关闭弹层继续看结果细节，或者直接再试一次。',
             actions: result.all_passed
               ? [
-                  { label: '关闭', onClick: () => closeFeedbackModal() },
+                  { label: '关闭', onClick: () => { closeFeedbackModal(); switchToStatusTab(); } },
                   ...(nextId ? [{ label: '下一道题', primary: true, onClick: () => { closeFeedbackModal(); state.currentQuestionId = nextId; renderProblemPage(); } }] : [])
                 ]
               : [
-                  { label: '关闭', onClick: () => closeFeedbackModal() },
+                  { label: '关闭', onClick: () => { closeFeedbackModal(); switchToStatusTab(); } },
                   { label: '再试一次', primary: true, onClick: () => closeFeedbackModal() }
                 ]
           });
         } catch (error) {
-          if (col) col.innerHTML = '<div class="console-block"><div class="console-row"><div class="strong">提交失败</div><span class="badge red">错误</span></div><div class="console-log">无法连接本地服务。</div></div>';
+          state.problemPanelMode = 'status';
+          renderProblemPage();
         }
       });
     }
@@ -3359,39 +3462,43 @@
           `).join('')
         : '<div class="muted">暂无提交记录</div>';
 
+      const writtenStatusHtml = renderAnswerStatusPanel(question, progress, stats, (progress.history || [])[0] ? `
+        <div class="console-list" style="margin-top:12px;">
+          <div class="console-list-item">
+            <div class="console-row"><div class="strong">最近一次提交</div><span class="badge orange">${escapeHtml(formatOpenReviewStatus((progress.history || [])[0].review_status))}</span></div>
+            <div class="console-log">时间：${formatTime((progress.history || [])[0].submitted_at)}</div>
+          </div>
+        </div>
+      ` : '');
+
       els.problemInfo.innerHTML = `
         <div class="problem-left-scroll">
-          <div class="problem-title-block">
-            <div>
-              <div class="muted" style="margin-bottom:8px;">开放题</div>
-              <h2 style="margin:0; font-size:clamp(26px, 2.4vw, 34px); line-height:1.25;">${escapeHtml(getQuestionDisplayTitle(question))}</h2>
-              <div class="problem-tag-row">${[renderTagChip('open', 'neutral'), ...(question.tags || []).slice(0, 3).map(tag => renderTagChip(tag, 'accent'))].join('')}</div>
-              ${diagnosticSignalChips}
+          ${state.problemPanelMode === 'status' ? writtenStatusHtml : state.problemPanelMode === 'history' ? `
+            <div class="problem-title-block" style="margin-bottom:18px;">
+              <div>
+                <div class="muted" style="margin-bottom:8px;">开放题提交记录</div>
+                <h2 style="margin:0; font-size:clamp(24px, 2vw, 30px); line-height:1.2;">${escapeHtml(getQuestionDisplayTitle(question))}</h2>
+              </div>
             </div>
-          </div>
-          <div class="problem-body-copy" style="margin-top:18px; white-space:pre-wrap;">${escapeHtml(getQuestionBodyText(question))}</div>
-          ${diagnosticCallout}
-          <div class="problem-card-soft" style="margin-top:18px;">
-            <div class="strong" style="margin-bottom:10px;">最近提交摘要</div>
-            ${historyHtml}
-          </div>
+            <div style="display:grid; gap:10px; margin-bottom:18px;">${historyHtml}</div>
+          ` : `
+            <div class="problem-title-block">
+              <div>
+                <div class="muted" style="margin-bottom:8px;">开放题</div>
+                <h2 style="margin:0; font-size:clamp(26px, 2.4vw, 34px); line-height:1.25;">${escapeHtml(getQuestionDisplayTitle(question))}</h2>
+                <div class="problem-tag-row">${[renderTagChip('open', 'neutral'), ...(question.tags || []).slice(0, 3).map(tag => renderTagChip(tag, 'accent'))].join('')}</div>
+                ${diagnosticSignalChips}
+              </div>
+            </div>
+            <div class="problem-body-copy" style="margin-top:18px;">${renderProblemBody(getQuestionBodyText(question))}</div>
+            ${diagnosticCallout}
+          `}
         </div>
       `;
 
       els.problemWorkspace.innerHTML = `
         <div class="concept-shell" style="padding-top:20px;">
-          <div class="problem-title-block" style="margin-bottom:8px;">
-            <div>
-              <div class="muted" style="margin-bottom:8px;">作答区</div>
-              <div class="problem-tag-row">
-                <span class="problem-inline-stat">提交 ${attempts} 次</span>
-                <span class="problem-inline-stat">记录 ${(progress.history || []).length} 条</span>
-                <span class="problem-inline-stat">状态 · ${reviewStatus || '未提交'}</span>
-              </div>
-            </div>
-          </div>
           <div class="problem-card-soft">
-            <div class="strong" style="margin-bottom:10px;">你的回答</div>
             <textarea id="writtenAnswerInput" class="code-input" style="min-height:220px; resize:vertical;">${escapeHtml(draft.text || '')}</textarea>
             <div class="concept-actions" style="margin-top:12px;">
               <button class="btn" id="saveWrittenBtn">保存草稿</button>
@@ -3454,11 +3561,11 @@
               : (result.error || '提交未成功，请稍后重试。'),
             actions: result.ok
               ? [
-                  { label: '关闭', onClick: () => closeFeedbackModal() },
+                  { label: '关闭', onClick: () => { closeFeedbackModal(); switchToStatusTab(); } },
                   ...(nextId ? [{ label: '下一道题', primary: true, onClick: () => { closeFeedbackModal(); state.currentQuestionId = nextId; renderProblemPage(); } }] : [])
                 ]
               : [
-                  { label: '关闭', onClick: () => closeFeedbackModal() },
+                  { label: '关闭', onClick: () => { closeFeedbackModal(); switchToStatusTab(); } },
                   { label: '继续编辑', primary: true, onClick: () => closeFeedbackModal() }
                 ]
           });
@@ -3481,6 +3588,7 @@
       } else {
         renderConceptPage(question);
       }
+      syncSidebarCollapsedState();
       syncProblemTabs();
     }
 
@@ -3617,6 +3725,8 @@
       const summary = state.progressData.summary || {};
       const session = getSessionMeta();
       const stopCommand = state.serverInfo?.stop_command || 'pkill -f "server.py"';
+      const finishResult = state.finishResult || {};
+      const resumeCommand = finishResult.resume_command;
       els.doneStats.innerHTML = [
         ['总题数', summary.total || state.questionsData.questions.length],
         ['已练习', summary.attempted || 0],
@@ -3629,11 +3739,11 @@
         </div>
       `).join('');
 
+      const autoResumeStarted = !!finishResult.auto_resume_started;
       els.doneContent.innerHTML = `
-        <h3>后续建议</h3>
-        <div class="muted" style="line-height:1.8; margin-bottom:14px;">
-          本次${getSessionLabel()} session 的结果已写入 <code>progress.json</code>。下一步可执行 <code>${getUpdateCommand()}</code> 回写长期计划或学习记录。
-        </div>
+        <h3>${resumeCommand ? '自动续跑命令' : '更新命令'}</h3>
+        <pre class="code-preview" style="margin-top:10px;">${escapeHtml(resumeCommand || getUpdateCommand())}</pre>
+        <p class="muted" style="margin-top:10px;">${resumeCommand ? (autoResumeStarted ? '当前 session 已自动执行续跑：会先停服，再自动 update，并重新进入 /learn-plan。' : '该 session 支持自动回流；若自动续跑未成功，可手动运行上面整条命令。') : '当前 session 未启用自动回流，请手动运行上面的更新命令。'}</p>
         <h3>手动停服命令</h3>
         <pre class="code-preview" style="margin-top:10px;">${escapeHtml(stopCommand)}</pre>
       `;
@@ -3678,7 +3788,7 @@
         console.error('学习 session 加载失败', error);
         els.dashboardTopic.textContent = '加载失败';
         if (els.heroDesc) {
-          els.heroDesc.textContent = '请检查 questions.json、progress.json、server.py 与 server.log；若是旧 session，可重新运行 learn-today 修复。';
+          els.heroDesc.textContent = '';
         }
       }
     }

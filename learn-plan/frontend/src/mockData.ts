@@ -1,0 +1,111 @@
+import type { DemoQuestion, SubmitRecord, TestCaseRecord } from './types'
+
+export const demoQuestions: DemoQuestion[] = [
+  {
+    id: 'py-return-001',
+    order: 1,
+    title: '修复没有返回值的函数',
+    type: 'code',
+    difficulty: '基础',
+    status: 'draft',
+    tags: ['Python', '函数', 'return'],
+    description: '你正在写一个用于自动批改的小函数。\n\n函数已经算出了两个数的和，但测试系统拿到的是 `None`。请补全函数，让它真正返回计算结果。\n\n- 不要只使用 `print`\n- 函数必须通过 `return` 交出结果\n- 公开样例只展示输入输出格式，隐藏测试不会展示\n\n```python\nadd_score(2, 3)\n```\n\n当 $a=2,b=3$ 时，结果应为 `5`。',
+    inputSpec: '函数签名：`def add_score(a: int, b: int) -> int`\n\n参数 `a` 和 `b` 都是整数。',
+    outputSpec: '返回 `a + b` 的整数结果。不要返回字符串，也不要只打印。',
+    constraints: ['-1000 <= a <= 1000', '-1000 <= b <= 1000', '必须使用 return 返回结果'],
+    starterCode: 'def add_score(a: int, b: int) -> int:\n    result = a + b\n    # 在这里返回 result\n',
+    answerDraft: 'def add_score(a: int, b: int) -> int:\n    result = a + b\n    return result\n',
+  },
+  {
+    id: 'py-basic-002',
+    order: 2,
+    title: '判断变量命名是否合法',
+    type: 'single_choice',
+    difficulty: '基础',
+    status: 'not_started',
+    tags: ['Python', '变量'],
+    description: '下面哪个变量名在 Python 中是合法且推荐的？\n\n请注意：题目考察的是**语法合法**和**命名风格**的结合。',
+    options: ['2score', 'student_score', 'class', 'student-score'],
+    answerDraft: '',
+  },
+  {
+    id: 'py-list-003',
+    order: 3,
+    title: '选择列表常见操作',
+    type: 'multiple_choice',
+    difficulty: '进阶',
+    status: 'failed',
+    tags: ['Python', '列表'],
+    description: '关于 Python 列表，哪些说法是正确的？\n\n- 列表可以按下标访问\n- 列表可以动态追加元素\n- 列表和字符串完全一样不可变',
+    options: ['`items[0]` 可以访问第一个元素', '`items.append(x)` 可以追加元素', '列表是不可变对象', '`len(items)` 可以得到长度'],
+    answerDraft: '`items[0]` 可以访问第一个元素\n`items.append(x)` 可以追加元素',
+  },
+  {
+    id: 'py-bool-004',
+    order: 4,
+    title: '判断 print 的返回值',
+    type: 'true_false',
+    difficulty: '基础',
+    status: 'passed',
+    tags: ['Python', 'print', 'None'],
+    description: '`print("hello")` 会把内容显示到终端，同时表达式本身的返回值是 `None`。\n\n这个说法是否正确？',
+    options: ['正确', '错误'],
+    answerDraft: '正确',
+  },
+]
+
+export const failedReturnTests: TestCaseRecord[] = [
+  {
+    name: '公开样例 1',
+    input: 'add_score(2, 3)',
+    expected: '5',
+    actual: '5',
+    passed: true,
+  },
+  {
+    name: '隐藏测试 2',
+    input: 'add_score(-4, 9)',
+    expected: '5',
+    actual: 'None',
+    passed: false,
+    note: '函数算出了 result，但某个分支没有 return。',
+  },
+]
+
+export const demoHistory: SubmitRecord[] = [
+  {
+    id: 'history-1',
+    questionId: 'py-bool-004',
+    action: 'submit',
+    status: 'passed',
+    message: '判断正确：print 的返回值是 None。',
+    createdAt: '09:24',
+    testCases: [
+      {
+        name: '判断题检查',
+        input: 'print("hello") 的返回值',
+        expected: 'None',
+        actual: 'None',
+        passed: true,
+      },
+    ],
+  },
+  {
+    id: 'history-2',
+    questionId: 'py-list-003',
+    action: 'submit',
+    status: 'failed',
+    message: '漏选了 len(items)，请回看列表基础操作。',
+    createdAt: '09:31',
+    testCases: [
+      {
+        name: '多选完整性',
+        input: '列表基础操作选项',
+        expected: 'items[0], append, len',
+        actual: 'items[0], append',
+        passed: false,
+        note: '漏选了 len(items)。',
+      },
+    ],
+  },
+]

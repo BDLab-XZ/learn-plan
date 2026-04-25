@@ -62,15 +62,10 @@ def build_default_material_entries(
         entry["topic"] = topic
         entry["domain"] = domain
         entry["local_path"] = str(local_path)
-        entry["exists_locally"] = local_path.exists()
+        local_exists = local_path.exists()
         is_local_mainline = entry.get("source_type") == "local"
-        entry["availability"] = "cached" if entry["exists_locally"] else ("local-downloadable" if entry.get("downloadable") or is_local_mainline else "metadata-only")
-        entry["selection_status"] = "confirmed" if entry["exists_locally"] or entry.get("downloadable") or is_local_mainline else "candidate"
-        entry["local_artifact"] = {
-            "path": str(local_path),
-            "file_type": Path(str(local_path)).suffix.lstrip(".") or None,
-            "downloaded_at": None,
-        }
+        entry["availability"] = "cached" if local_exists else ("local-downloadable" if entry.get("downloadable") or is_local_mainline else "metadata-only")
+        entry["selection_status"] = "confirmed" if local_exists or entry.get("downloadable") or is_local_mainline else "candidate"
         entry["coverage"] = {
             "topic": topic,
             "stages": entry.get("recommended_stage") or [],
@@ -92,10 +87,9 @@ def build_default_material_entries(
             "applied_project": [f"围绕 {entry.get('title') or topic} 做 1 个小练习或小项目"],
             "reflection": [f"用自己的话解释 {entry.get('title') or topic} 的关键概念与实际用途"],
         }
-        if entry["exists_locally"]:
+        if local_exists:
             entry["cache_status"] = "cached"
-            entry["cache_note"] = "已检测到本地缓存文件"
-            entry["local_artifact"]["downloaded_at"] = time.strftime("%Y-%m-%d")
+            entry["cached_at"] = time.strftime("%Y-%m-%d")
         entries.append(entry)
     return entries
 
@@ -115,7 +109,7 @@ def build_materials_index(
     family_configs: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
     data = dict(existing) if existing else {}
-    existing_pool = data.get("entries") or data.get("materials") or []
+    existing_pool = data.get("entries") or data.get("items") or data.get("materials") or []
     index_domain = str(data.get("domain") or "").strip()
     existing_entries: list[dict[str, Any]] = []
     for item in existing_pool:
@@ -144,6 +138,7 @@ def build_materials_index(
     data["materials_dir"] = str(materials_dir)
     data["material_policy"] = "正式主线资料必须优先使用本地已存在或可直链下载到本地的材料。"
     data["entries"] = entries
+    data["items"] = entries
     data["materials"] = entries
     data["confirmed_materials"] = confirmed_entries
     data["candidate_materials"] = candidate_entries
@@ -167,7 +162,7 @@ def build_materials_index(
             "reading_segments": item.get("reading_segments") or [],
         }
         for item in entries
-        if item.get("exists_locally") and item.get("local_path")
+        if item.get("cache_status") == "cached" and item.get("local_path")
     ]
     data["notes"] = "当前版本要求主线资料优先本地可得，并为主线资料补充章节/页码/小节级阅读定位与掌握度检验信息。"
     return data

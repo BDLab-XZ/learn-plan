@@ -46,11 +46,13 @@ description: 基于 learn-plan.md 生成并启动今日学习 session，复用 l
    - `questions.json`
    - `progress.json`
    - `server.py`
-6. 完整 session 直接继续；否则调用：
+6. 完整 session 直接继续；否则先按 selective subagent strategy 让主 agent 编排必要的讲义、出题和严格审题 subagent，拿到可验证 artifact 后调用：
 
 ```bash
-python3 "$HOME/.claude/skills/learn-plan/session_orchestrator.py" --session-dir "<session目录>" --topic "<学习主题>" --plan-path "<learn-plan.md路径>" --session-type today
+python3 "$HOME/.claude/skills/learn-plan/session_orchestrator.py" --session-dir "<session目录>" --topic "<学习主题>" --plan-path "<learn-plan.md路径>" --session-type today --lesson-artifact-json "<lesson-artifact.json>" --question-artifact-json "<question-artifact.json>" --question-review-json "<question-review.json>"
 ```
+
+若缺出题/审题 artifact，必须阻断并补齐；CLI 验证只消费 artifact，不代替检索、出题、严格审题或语义审查。
 
 7. 若已有 `questions.json` 但缺运行时文件，也可调用：
 

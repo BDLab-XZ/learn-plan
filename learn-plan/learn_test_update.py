@@ -6,16 +6,21 @@ import json
 from pathlib import Path
 from typing import Any
 
-from learn_core.io import read_json, read_text_if_exists, write_json, write_text
+from learn_core.io import read_json, read_json_if_exists as core_read_json_if_exists, read_text_if_exists, write_json, write_text
 from learn_core.markdown_sections import upsert_markdown_section
 from learn_core.text_utils import normalize_int, normalize_string_list
+from learn_workflow import refresh_workflow_state
+from learn_workflow.contracts import default_workflow_paths
+from learn_workflow.stage_review import review_stage_candidate
+from learn_workflow.workflow_store import resolve_learning_root
 from learn_feedback import (
     build_session_facts,
     render_feedback_output_lines,
     update_learner_model_file,
     update_patch_queue_file,
 )
-from learn_today_update import (
+from learn_feedback.curriculum_patch import pending_patch_items
+from learn_feedback.diagnostic_update import (
     print_diagnostic_summary,
     summarize_diagnostic_progress,
     update_diagnostic_state,
@@ -28,7 +33,9 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Summarize a learn-plan test session and update learn-plan.md")
     parser.add_argument("--session-dir", required=True, help="session 目录，需包含 progress.json")
     parser.add_argument("--plan-path", default="learn-plan.md", help="学习计划文件路径")
-    parser.add_argument("--project-path", help="可选 PROJECT.md 路径；仅在需要兼容旧项目记录时使用")
+    parser.add_argument("--project-path", default=None, help="可选 PROJECT.md 路径；仅在显式兼容旧项目记录时使用")
+    parser.add_argument("--semantic-review-json", help="由外部 subagent 生成的 test semantic review JSON 文件路径")
+    parser.add_argument("--semantic-diagnostic-json", help="由外部 subagent 生成的 diagnostic semantic JSON 文件路径")
     parser.add_argument("--stdout-json", action="store_true", help="额外输出 JSON 摘要")
     return parser.parse_args()
 
@@ -189,15 +196,41 @@ def is_legacy_plan_diagnostic_session(session: dict[str, Any]) -> bool:
     return session.get("plan_execution_mode") == "diagnostic" and session.get("assessment_kind") != "initial-test"
 
 
-def is_initial_test_diagnostic_session(session: dict[str, Any]) -> bool:
-    return (
+def is_initial_test_diagnostic_session(session: dict[str, Any], progress: dict[str, Any] | None = None) -> bool:
+    if not (
         session.get("assessment_kind") == "initial-test"
         and session.get("intent") == "assessment"
-        and session.get("plan_execution_mode") == "diagnostic"
+    ):
+        return False
+    if session.get("plan_execution_mode") == "diagnostic":
+        return True
+    if not isinstance(progress, dict):
+        return False
+    context = progress.get("context") if isinstance(progress.get("context"), dict) else {}
+    current_stage = str(context.get("current_stage") or "").strip().lower()
+    stop_reason = str(session.get("stop_reason") or context.get("stop_reason") or "").strip().lower()
+    round_index = session.get("round_index") or context.get("round_index")
+    max_rounds = session.get("max_rounds") or context.get("max_rounds")
+    return current_stage == "diagnostic" or stop_reason.startswith("diagnostic") or any(
+        value is not None and str(value).strip() not in {"", "null", "None"}
+        for value in [round_index, max_rounds]
     )
 
 
-def summarize_test_progress(progress: dict[str, Any], questions_data: dict[str, Any]) -> dict[str, Any]:
+def semantic_review_is_valid(payload: dict[str, Any] | None) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    quality_review = payload.get("quality_review") if isinstance(payload.get("quality_review"), dict) else {}
+    generation_trace = payload.get("generation_trace") if isinstance(payload.get("generation_trace"), dict) else {}
+    return bool(
+        quality_review.get("valid")
+        and normalize_string_list(payload.get("evidence") or [])
+        and generation_trace
+        and normalize_string_list(payload.get("traceability") or [])
+    )
+
+
+def summarize_test_progress(progress: dict[str, Any], questions_data: dict[str, Any], semantic_review: dict[str, Any] | None = None) -> dict[str, Any]:
     topic = progress.get("topic") or "未命名主题"
     session = progress.get("session") or {}
     summary = progress.get("summary") or {}
@@ -224,6 +257,8 @@ def summarize_test_progress(progress: dict[str, Any], questions_data: dict[str, 
             continue
 
         tags = question.get("tags") or []
+        capability_tags = normalize_string_list(question.get("capability_tags") or tags)
+        submit_result = stats.get("last_submit_result") if isinstance(stats.get("last_submit_result"), dict) else None
         if question.get("category") == "open":
             pending_review_items.append(
                 {
@@ -248,7 +283,10 @@ def summarize_test_progress(progress: dict[str, Any], questions_data: dict[str, 
             "success_count": success_count,
             "category": question.get("category") or "unknown",
             "tags": tags,
+            "capability_tags": capability_tags,
         }
+        if submit_result:
+            record["submit_result"] = submit_result
         if success_count > 0:
             solved_items.append(record)
         else:
@@ -278,56 +316,16 @@ def summarize_test_progress(progress: dict[str, Any], questions_data: dict[str, 
     if not covered_scope:
         covered_scope = [f"{topic} 已学核心内容", f"{topic} 最近练习重点"]
 
-    overall = "未开始"
-    should_review = False
-    can_advance = False
-    if attempted > 0:
-        accuracy = correct / attempted if attempted else 0
-        if accuracy >= 0.85:
-            overall = "测试表现较稳"
-            can_advance = True
-        elif accuracy >= 0.6:
-            overall = "测试表现中等"
-            should_review = bool(wrong_items)
-            can_advance = not wrong_items
-        else:
-            overall = "测试结果显示需要回炉复习"
-            should_review = True
-
-        if pending_review_items:
-            should_review = True
-            can_advance = False
-        if not mastery.get("reading_done"):
-            should_review = True
-            can_advance = False
-            overall = "测试题表现可参考，但阅读理解未稳固"
-        if not mastery.get("reflection_done"):
-            should_review = True
-            can_advance = False
-            overall = "测试完成，但复盘不足，暂不建议推进"
-        if can_advance and not mastery.get("project_done"):
-            overall = "测试表现较稳，但应用验证不足"
-        if pending_review_items:
-            overall = "测试已完成，但仍有开放题待评阅"
-
-    review_decision = "建议先回看开放题评阅结果" if pending_review_items else ("建议先回退复习" if should_review else ("先完成本次测试" if attempted == 0 else "暂不需要回退复习"))
-    advance_decision = "可以进入下一阶段" if can_advance else "暂不建议进入下一阶段"
-
-    next_actions: list[str] = []
-    if attempted == 0:
-        next_actions = [f"先完成 {topic} 的本次测试", f"至少完成 3 道概念题和 2 道代码题后再判断阶段"]
-    elif pending_review_items:
-        focus = pending_review_titles[0] if pending_review_titles else topic
-        next_actions = [f"先查看开放题《{focus}》的评阅结果", "待开放题完成评阅后再决定是否进入下一阶段"]
-    elif should_review:
-        focus = weakness_titles[0] if weakness_titles else (weakness_tags[0] if weakness_tags else topic)
-        next_actions = [f"先回退复习 {focus}", f"补做 1 组同类型题后再重新测试"]
-    elif can_advance:
-        next_actions = [f"进入 {topic} 的下一阶段内容", f"下一轮测试增加速度与稳定性要求"]
-    else:
-        next_actions = [f"补强 {topic} 当前薄弱点后再做一次测试", f"重点检查概念理解与代码稳定性"]
-    if not mastery.get("project_done"):
-        next_actions.append("补 1 个小项目/实作，验证知识能否迁移应用")
+    semantic_valid = semantic_review_is_valid(semantic_review)
+    semantic_review = semantic_review if isinstance(semantic_review, dict) else {}
+    semantic_status = "ok" if semantic_valid else "missing_artifact"
+    overall = str(semantic_review.get("overall") or "").strip() if semantic_valid else ""
+    weaknesses = normalize_string_list(semantic_review.get("weaknesses") if semantic_valid else [])
+    next_actions = normalize_string_list(semantic_review.get("next_actions") if semantic_valid else [])
+    should_review = bool(semantic_review.get("should_review")) if semantic_valid else False
+    can_advance = bool(semantic_review.get("can_advance")) if semantic_valid else False
+    review_decision = str(semantic_review.get("review_decision") or "").strip() if semantic_valid else "缺少 semantic review artifact"
+    advance_decision = str(semantic_review.get("advance_decision") or "").strip() if semantic_valid else "缺少 semantic review artifact"
 
     return {
         "topic": topic,
@@ -342,9 +340,12 @@ def summarize_test_progress(progress: dict[str, Any], questions_data: dict[str, 
         "correct": correct,
         "pending_review_count": len(pending_review_items),
         "pending_review_items": normalize_string_list(pending_review_titles),
-        "overall": overall,
+        "overall": overall or None,
+        "semantic_status": semantic_status,
+        "semantic_missing_requirements": ([] if semantic_valid else ["semantic_review"]),
+        "semantic_review": semantic_review if semantic_valid else {},
         "covered_scope": covered_scope[:4],
-        "weaknesses": weakness_titles or weakness_tags,
+        "weaknesses": weaknesses,
         "should_review": should_review,
         "can_advance": can_advance,
         "review_decision": review_decision,
@@ -353,15 +354,17 @@ def summarize_test_progress(progress: dict[str, Any], questions_data: dict[str, 
         "wrong_items": wrong_items,
         "solved_items": solved_items[:3],
         "mastery": mastery,
-        "blocking_weaknesses": weakness_titles[:2] or weakness_tags[:2],
-        "deferred_enhancement": [] if can_advance else normalize_string_list((plan_source.get("enhancement_modules") or [])[:1]),
+        "blocking_weaknesses": weaknesses[:2] if semantic_valid else [],
+        "deferred_enhancement": normalize_string_list(semantic_review.get("deferred_enhancement") if semantic_valid else []),
     }
 
 
 def render_log_entry(summary: dict[str, Any], session_dir: Path) -> str:
     covered_text = "；".join(summary["covered_scope"])
-    weakness_text = "；".join(summary["weaknesses"]) or "暂无明显薄弱项"
-    next_text = "；".join(summary["next_actions"])
+    semantic_ready = summary.get("semantic_status") == "ok"
+    weakness_text = ("；".join(summary["weaknesses"]) or "暂无明显薄弱项") if semantic_ready else "缺少 semantic review artifact"
+    next_text = "；".join(summary["next_actions"]) if semantic_ready else "缺少 semantic review artifact"
+    overall_text = summary.get("overall") if semantic_ready else "缺少 semantic review artifact"
     test_mode = summary.get("test_mode") or "general"
     mastery = summary.get("mastery") or {}
     return "\n".join(
@@ -373,7 +376,8 @@ def render_log_entry(summary: dict[str, Any], session_dir: Path) -> str:
             f"- 总题数：{summary['total']}",
             f"- 已练习题数：{summary['attempted']}",
             f"- 正确/通过题数：{summary['correct']}",
-            f"- 总体表现：{summary['overall']}",
+            f"- 总体表现：{overall_text}",
+            f"- semantic review 状态：{summary.get('semantic_status') or 'unknown'}",
             f"- 阅读掌握清单：{'已达标' if mastery.get('reading_done') else '未达标'}",
             f"- session 练习/测试：{'已完成' if mastery.get('session_done') else '未完成'}",
             f"- 小项目/实作：{'已完成' if mastery.get('project_done') else '未完成'}",
@@ -408,6 +412,8 @@ def update_project_log(project_path: Path, summary: dict[str, Any], session_dir:
 
 def write_feedback_artifacts(plan_path: Path, summary: dict[str, Any], progress: dict[str, Any], session_dir: Path) -> dict[str, Any]:
     session_facts = build_session_facts(progress, summary, session_dir=session_dir, update_type="test")
+    paths = default_workflow_paths(resolve_learning_root(plan_path), plan_path, plan_path.parent / "materials" / "index.json")
+    write_json(paths["session_facts_json"], session_facts)
     learner_model = update_learner_model_file(plan_path, summary, session_facts, update_type="test")
     patch_queue = update_patch_queue_file(plan_path, summary, session_facts, update_type="test")
     return {
@@ -418,15 +424,172 @@ def write_feedback_artifacts(plan_path: Path, summary: dict[str, Any], progress:
 
 
 
+def write_diagnostic_workflow_artifact(plan_path: Path, summary: dict[str, Any], questions_data: dict[str, Any], session_dir: Path, progress: dict[str, Any] | None = None) -> Path:
+    paths = default_workflow_paths(resolve_learning_root(plan_path), plan_path, plan_path.parent / "materials" / "index.json")
+    workflow_dir = paths["workflow_state_json"].parent
+    diagnostic_path = paths["diagnostic_json"]
+    diagnostic_profile = summary.get("diagnostic_profile") if isinstance(summary.get("diagnostic_profile"), dict) else {}
+    plan_source = questions_data.get("plan_source") if isinstance(questions_data.get("plan_source"), dict) else {}
+    blueprint = plan_source.get("diagnostic_blueprint") if isinstance(plan_source.get("diagnostic_blueprint"), dict) else {}
+    blueprint_items = blueprint.get("diagnostic_items") if isinstance(blueprint.get("diagnostic_items"), list) else []
+    runtime_question_snapshot = []
+    runtime_blueprint_items = []
+    for index, item in enumerate(questions_data.get("questions") or [], start=1):
+        if not isinstance(item, dict):
+            continue
+        question_id = str(item.get("id") or f"runtime-question-{index}")
+        category = str(item.get("category") or "unknown")
+        tags = normalize_string_list(item.get("tags") or [])
+        runtime_question_snapshot.append(
+            {
+                "id": question_id,
+                "category": category,
+                "question_role": str(item.get("question_role") or ""),
+                "tags": tags,
+                "source_trace": item.get("source_trace") or {},
+            }
+        )
+        runtime_blueprint_items.append(
+            {
+                "id": question_id,
+                "capability_id": question_id,
+                "capability_label": str(item.get("title") or item.get("question") or item.get("prompt") or question_id).strip(),
+                "type": category,
+                "prompt": str(item.get("prompt") or item.get("question") or item.get("title") or question_id).strip(),
+                "expected_signals": tags,
+                "rubric": item.get("rubric") or "runtime-fallback",
+            }
+        )
+
+    session = progress.get("session") if isinstance(progress, dict) and isinstance(progress.get("session"), dict) else {}
+    if not blueprint_items:
+        blueprint_items = runtime_blueprint_items
+    blueprint_item_map: dict[str, dict[str, Any]] = {}
+    for index, item in enumerate(blueprint_items, start=1):
+        if not isinstance(item, dict):
+            continue
+        capability_id = str(item.get("capability_id") or item.get("capability") or item.get("id") or f"cap-{index}").strip()
+        if not capability_id:
+            continue
+        normalized_item = dict(item)
+        normalized_item["capability_id"] = capability_id
+        if "capability" in normalized_item and not normalized_item.get("capability_label"):
+            normalized_item["capability_label"] = normalized_item.get("capability")
+        blueprint_item_map[capability_id] = normalized_item
+    blueprint_items = list(blueprint_item_map.values())
+
+    observed_strengths = set(normalize_string_list(diagnostic_profile.get("observed_strengths") or []))
+    observed_weaknesses = set(normalize_string_list(diagnostic_profile.get("observed_weaknesses") or []))
+    capability_assessment = []
+    seen_capability_ids: set[str] = set()
+    for item in blueprint_items:
+        capability_id = str(item.get("capability_id") or "").strip()
+        if not capability_id or capability_id in seen_capability_ids:
+            continue
+        seen_capability_ids.add(capability_id)
+        capability_label = str(item.get("capability_label") or item.get("prompt") or capability_id).strip()
+        if capability_label in observed_strengths or capability_id in observed_strengths:
+            current_level = "strength"
+            gap = ""
+        elif capability_label in observed_weaknesses or capability_id in observed_weaknesses:
+            current_level = "weakness"
+            gap = "needs-review"
+        else:
+            current_level = "observed"
+            gap = ""
+        capability_assessment.append(
+            {
+                "capability_id": capability_id,
+                "capability_label": capability_label,
+                "current_level": current_level,
+                "target_level": str(summary.get("recommended_entry_level") or diagnostic_profile.get("baseline_level") or "diagnostic").strip(),
+                "gap": gap,
+                "confidence": diagnostic_profile.get("confidence"),
+            }
+        )
+
+    candidate = {
+        "contract_version": "learn-plan.workflow.v2",
+        "stage": "diagnostic",
+        "candidate_version": blueprint.get("candidate_version") or "manual.diagnostic-update.v1",
+        "diagnostic_plan": {
+            "delivery": "web-session",
+            "assessment_kind": "initial-test",
+            "session_intent": "assessment",
+            "plan_execution_mode": "diagnostic",
+            "round_index": diagnostic_profile.get("round_index"),
+            "max_rounds": diagnostic_profile.get("max_rounds"),
+            "questions_per_round": diagnostic_profile.get("questions_per_round"),
+            "follow_up_needed": diagnostic_profile.get("follow_up_needed"),
+            "question_source": plan_source.get("question_source") or "runtime-generated",
+            "diagnostic_generation_mode": plan_source.get("diagnostic_generation_mode") or "runtime-generated-domain-bank",
+            "target_capability_ids": normalize_string_list(blueprint.get("target_capability_ids") or []),
+            "scoring_rubric": blueprint.get("scoring_rubric") or [],
+        },
+        "diagnostic_items": blueprint_items,
+        "diagnostic_result": {
+            "status": "evaluated",
+            "overall": summary.get("overall"),
+            "recommended_entry_level": summary.get("recommended_entry_level"),
+            "follow_up_needed": diagnostic_profile.get("follow_up_needed"),
+            "stop_reason": diagnostic_profile.get("stop_reason"),
+            "capability_assessment": capability_assessment,
+            "confidence": diagnostic_profile.get("confidence"),
+        },
+        "diagnostic_profile": diagnostic_profile,
+        "resume_context": {
+            "topic": session.get("resume_topic") or summary.get("topic") or plan_source.get("topic"),
+            "goal": session.get("resume_goal") or (plan_source.get("goal_model") or {}).get("mainline_goal") or summary.get("topic"),
+            "level": session.get("resume_level") or summary.get("recommended_entry_level") or diagnostic_profile.get("baseline_level") or "diagnostic",
+            "schedule": session.get("resume_schedule") or "未指定",
+            "preference": session.get("resume_preference") or "混合",
+        },
+        "runtime_question_snapshot": runtime_question_snapshot,
+        "evidence": normalize_string_list(
+            list(diagnostic_profile.get("evidence") or [])
+            + [f"session_dir={session_dir}", f"recommended_entry_level={summary.get('recommended_entry_level')}", f"question_source={plan_source.get('question_source') or 'runtime-generated'}"]
+        ),
+        "confidence": diagnostic_profile.get("confidence") or 0.8,
+        "generation_trace": {
+            "stage": "diagnostic",
+            "generator": "learn-test-update",
+            "status": "completed",
+            "update_type": "diagnostic",
+        },
+        "traceability": [
+            {
+                "kind": "session",
+                "ref": str(session_dir),
+                "title": str(summary.get("topic") or "diagnostic session"),
+                "detail": "diagnostic",
+                "stage": "diagnostic",
+                "status": "recorded",
+            }
+        ],
+    }
+    reviewed = review_stage_candidate("diagnostic", candidate)
+    reviewed["contract_version"] = "learn-plan.workflow.v2"
+    reviewed["stage"] = "diagnostic"
+    reviewed["candidate_version"] = reviewed.get("candidate_version") or "manual.diagnostic-update.v1"
+    write_json(diagnostic_path, reviewed)
+    return diagnostic_path
+
+
+
 def print_summary(summary: dict[str, Any], plan_path: Path, project_path: Path | None, *, stdout_json: bool, feedback_result: dict[str, Any] | None = None) -> None:
-    weakness_text = '；'.join(summary['weaknesses']) or '暂无明显薄弱项'
+    semantic_ready = summary.get("semantic_status") == "ok"
+    weakness_text = ('；'.join(summary['weaknesses']) or '暂无明显薄弱项') if semantic_ready else '缺少 semantic review artifact'
+    overall_text = summary.get("overall") if semantic_ready else "缺少 semantic review artifact"
     print(f"主题：{summary['topic']}")
     print(f"测试模式：{summary.get('test_mode') or 'general'}")
     print(f"覆盖范围：{'；'.join(summary['covered_scope'])}")
-    print(f"总体表现：{summary['overall']}")
+    print(f"semantic review 状态：{summary.get('semantic_status') or 'unknown'}")
+    print(f"总体表现：{overall_text}")
     print(f"薄弱项：{weakness_text}")
     print(f"是否应回退复习：{summary['review_decision']}")
+    next_text = '；'.join(summary['next_actions']) if semantic_ready else '缺少 semantic review artifact'
     print(f"是否进入下一阶段：{summary['advance_decision']}")
+    print(f"后续建议：{next_text}")
     print(f"学习计划：{plan_path}")
     if project_path is not None:
         print(f"PROJECT：{project_path}")
@@ -450,23 +613,54 @@ def main() -> int:
     progress = read_json(progress_path)
     session = progress.get("session") if isinstance(progress.get("session"), dict) else {}
     questions_data = load_questions_data(session_dir)
-    if is_initial_test_diagnostic_session(session) or is_legacy_plan_diagnostic_session(session):
+    semantic_review = read_json(Path(args.semantic_review_json).expanduser().resolve()) if args.semantic_review_json else None
+    semantic_diagnostic = read_json(Path(args.semantic_diagnostic_json).expanduser().resolve()) if args.semantic_diagnostic_json else None
+    if is_initial_test_diagnostic_session(session, progress) or is_legacy_plan_diagnostic_session(session):
         questions_map = load_questions_map(questions_data)
-        summary = summarize_diagnostic_progress(progress, questions_map)
+        summary = summarize_diagnostic_progress(progress, questions_map, semantic_diagnostic=semantic_diagnostic)
         updated_progress = update_diagnostic_state(progress, summary)
         write_json(progress_path, updated_progress)
         update_learn_plan_with_diagnostic(plan_path, summary, session_dir)
+        write_diagnostic_workflow_artifact(plan_path, summary, questions_data, session_dir, progress=updated_progress)
+        paths = default_workflow_paths(resolve_learning_root(plan_path), plan_path, plan_path.parent / "materials" / "index.json")
+        diagnostic_data = core_read_json_if_exists(paths["diagnostic_json"])
+        diagnostic_plan = diagnostic_data.get("diagnostic_plan") if isinstance(diagnostic_data.get("diagnostic_plan"), dict) else {}
+        diagnostic_profile = summary.get("diagnostic_profile") if isinstance(summary.get("diagnostic_profile"), dict) else {}
+        follow_up = diagnostic_profile.get("follow_up_needed") or diagnostic_plan.get("follow_up_needed")
+        round_index = diagnostic_plan.get("round_index", 0)
+        max_rounds = diagnostic_plan.get("max_rounds", 1)
+        if follow_up and isinstance(round_index, int) and isinstance(max_rounds, int) and round_index < max_rounds:
+            next_round = round_index + 1
+            if args.stdout_json:
+                print(json.dumps({"pending_patch_count": 0, "next_action": "switch_to:diagnostic", "next_round_index": next_round, "follow_up_needed": True}))
+            print(f"\n建议启动第 {next_round} 轮诊断（共 {max_rounds} 轮），运行 /learn-plan 进入续轮")
         feedback_result = write_diagnostic_feedback_artifacts(plan_path, summary, updated_progress, session_dir, update_type="diagnostic")
+        refresh_workflow_state(plan_path)
         print_diagnostic_summary(summary, plan_path, stdout_json=args.stdout_json, feedback_result=feedback_result)
+        patch_queue = (feedback_result.get("patch_queue") or {}).get("queue")
+        if isinstance(patch_queue, dict):
+            pending_count = len(pending_patch_items(patch_queue))
+            if pending_count > 0:
+                print(f"提示：有 {pending_count} 条待审批的课程调整建议，可运行 /learn-plan 审批")
+                if args.stdout_json:
+                    print(json.dumps({"pending_patch_count": pending_count, "suggested_action": "run /learn-plan to review and approve curriculum adjustments"}, ensure_ascii=False))
         return 0
-    summary = summarize_test_progress(progress, questions_data)
+    summary = summarize_test_progress(progress, questions_data, semantic_review=semantic_review)
     updated_progress = update_progress_state(progress, summary, questions_data=questions_data)
     write_json(progress_path, updated_progress)
     update_learn_plan(plan_path, summary, session_dir)
     feedback_result = write_feedback_artifacts(plan_path, summary, updated_progress, session_dir)
+    refresh_workflow_state(plan_path)
     if project_path is not None:
         update_project_log(project_path, summary, session_dir)
     print_summary(summary, plan_path, project_path, stdout_json=args.stdout_json, feedback_result=feedback_result)
+    patch_queue = (feedback_result.get("patch_queue") or {}).get("queue")
+    if isinstance(patch_queue, dict):
+        pending_count = len(pending_patch_items(patch_queue))
+        if pending_count > 0:
+            print(f"提示：有 {pending_count} 条待审批的课程调整建议，可运行 /learn-plan 审批")
+            if args.stdout_json:
+                print(json.dumps({"pending_patch_count": pending_count, "suggested_action": "run /learn-plan to review and approve curriculum adjustments"}, ensure_ascii=False))
     return 0
 
 

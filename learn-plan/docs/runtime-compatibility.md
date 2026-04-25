@@ -87,7 +87,7 @@
 - 新增预处理与缓存字段
 
 不允许破坏：
-- 仅支持新 schema，不兼容旧 `items` 列表
+- 只允许把 `entries` 作为当前 canonical 根数组，同时兼容读取旧 `items` / `materials`
 - 让 downloader 覆盖掉规划层字段
 
 ## 3.3 session 目录结构
@@ -106,8 +106,9 @@ sessions/YYYY-MM-DD-test/
 - `server.py`
 
 允许新增：
-- `lesson.md`
+- `learn-today-YYYY-MM-DD.md`
 - `test.json`
+- `lesson_review` / `question_review` 等 advisory 产物
 - 其他调试/中间产物
 
 但新增文件不能替代上述最低四件套。
@@ -173,9 +174,11 @@ sessions/YYYY-MM-DD-test/
 允许变化：
 - `auto` 更严格地只做路由而不是直接落正式计划
 - `draft/research-report/diagnostic` 改为只产出中间态和 preview
+- 执行器在调用 `learn_plan.py` 前，必须先派发 Agent subagent 生成 search/research、stage candidate、planning candidate 与 semantic review，再通过 JSON 文件参数注入脚本
 
 不允许破坏：
 - skill prompt 仍按这些 mode 工作，但脚本却删除这些 mode
+- 让 Python runtime 默认依赖“当前主会话上下文句柄”；注入接口只接收显式 JSON 文件，不假设 Python 子进程可直接调用当前会话 Agent 工具层
 
 ### 5.3 旧 plan 兼容
 
@@ -201,7 +204,7 @@ sessions/YYYY-MM-DD-test/
 - 能读 `materials/index.json`
 - 能参考最近 `progress.json`
 - 能写出合法 `questions.json`
-- 能产出/复用 `lesson.md`
+- 能在 today 主路径产出/复用 canonical `learn-today-YYYY-MM-DD.md`
 - 能调用 bootstrap 落地 session
 
 ## 6.3 daily teacher 一等化但不重写 runtime 前端
@@ -234,7 +237,7 @@ sessions/YYYY-MM-DD-test/
 
 不允许破坏：
 - 只写新 JSON，不再更新 `learn-plan.md`
-- 强依赖 `PROJECT.md`
+- 不强依赖 `PROJECT.md`
 
 ---
 

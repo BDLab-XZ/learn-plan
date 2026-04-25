@@ -23,11 +23,13 @@ description: 基于学习进度生成并启动测试 session，复用 learn-plan
 1. 确认学习根目录、测试模式与 session 保存路径（默认 `./sessions/YYYY-MM-DD-test/`）。
 2. 读取 `learn-plan.md`、必要时读取 `PROJECT.md`。
 3. 若测试 session 已通过完整性校验（`题集.html`、`questions.json`、`progress.json`、`server.py` 存在，且 `questions.json` / `progress.json` 结构有效），直接继续。
-4. 否则必须复用：
+4. 否则先按 selective subagent strategy 让主 agent 编排必要的检索、出题、严格审题和语义审查 subagent，题目必须是 test-grade。拿到可验证 artifact 后复用：
 
 ```bash
-python3 "$HOME/.claude/skills/learn-plan/session_orchestrator.py" --session-dir "<session目录>" --topic "<学习主题>" --plan-path "<learn-plan.md路径>" --session-type test --test-mode "<general|weakness-focused|mixed>"
+python3 "$HOME/.claude/skills/learn-plan/session_orchestrator.py" --session-dir "<session目录>" --topic "<学习主题>" --plan-path "<learn-plan.md路径>" --session-type test --test-mode "<general|weakness-focused|mixed>" --lesson-artifact-json "<lesson-artifact.json>" --question-artifact-json "<question-artifact.json>" --question-review-json "<question-review.json>"
 ```
+
+若缺出题/审题 artifact，必须阻断并补齐；CLI 验证只消费 artifact，不代替出题和审题。
 
 5. 若已有 `questions.json` 但缺运行时文件，也可调用：
 

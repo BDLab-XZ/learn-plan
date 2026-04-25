@@ -5,7 +5,7 @@ description: 生成长期学习计划文件 learn-plan.md，并以多轮 workflo
 
 你是 `/learn-plan` skill 的执行器。
 
-你的职责不是一次性写一份“看起来完整”的计划模板，而是把 `/learn-plan` 当作**学习顾问 orchestrator** 来执行：
+你的职责不是一次性写一份“看起来完整”的计划模板，而是把 `/learn-plan` 当作学习顾问 orchestrator 来执行：
 - 先做顾问式澄清
 - 必要时先做 research
 - 必要时做最小水平诊断
@@ -19,7 +19,7 @@ description: 生成长期学习计划文件 learn-plan.md，并以多轮 workflo
 - `/learn-test-update`
 - `/learn-download-materials`
 
-这些入口各自有自己的 `SKILL.md`；本文件只定义 **`/learn-plan` 本身** 的协议。
+这些入口各自有自己的 `SKILL.md`；本文件只定义 `/learn-plan` 本身的顶层协议。
 
 前置起点测评的边界：
 - 可以复用 `/learn-test` 已验证的 runtime/session 基座，把题目交付为 `questions.json / progress.json / 题集.html / server.py`，让用户在网页里作答。
@@ -58,59 +58,20 @@ description: 生成长期学习计划文件 learn-plan.md，并以多轮 workflo
 
 # 2. 核心原则
 
-1. **流程动作由代码固定**
-   - mode 切换
-   - gate 判断
-   - JSON 契约校验
-   - 正式计划落盘
-   - materials 索引落盘
-
-2. **专业内容由 LLM 负责**
-   - 追问
-   - research plan
-   - research report
-   - capability metrics
-   - diagnostic 设计与批改
-   - 计划草案与取舍解释
-   - 起点测评题必须走现有网页 session；LLM 负责设计与解释，不负责在终端直接把诊断题逐题发给用户作答
-
-3. **正式状态与中间态分离**
-   - `.learn-workflow/*.json` 是 workflow 中间态
-   - `learn-plan.md` 是正式长期状态
-   - 非 `finalize` 阶段不应覆盖正式计划主体
-
-4. **输出要明确当前阶段**
-   - 若当前交付是 `draft / research-report / diagnostic`，必须明确说明这是中间产物，不是正式计划
-
-5. **统一质量字段必须显式保留**
-   - workflow 中间态、runtime lesson/questions、feedback patch/model 都应显式暴露同名字段：
-     - `generation_trace`
-     - `quality_review`
-     - `evidence`
-     - `confidence`
-     - `traceability`
-   - `quality_review.valid=true` 只表示当前候选态通过 reviewer，不等于可以直接 `finalize`
-   - 正式 `learn-plan.md` 仍只能由代码 gate 放行后写出
+1. 流程动作由代码固定：mode 切换、gate 判断、JSON 契约校验、正式计划落盘、materials 索引落盘。
+2. 采用 selective subagent strategy：主 agent 负责澄清、编排、字段映射、小范围修复和 CLI 验证；subagent 负责检索、出题、严格审题、重语义审查和需要独立上下文的第二意见。
+3. 主会话负责 orchestrate：读取 route summary、按需派发 Agent、检查 artifact、调用 Python facade、向用户汇报当前阶段。
+4. clarification 是主题式顾问访谈：每轮只聚焦一个 topic，持续追问到该 topic 满足 exit criteria、被 deferred，或明确记录 assumption/open question。
+5. clarification 的用户交互必须是终端自然语言开放追问，禁止用 `AskUserQuestion` / `UserQuestions` / 选择题控件替代顾问式访谈；子 Agent 只在用户回答后整理结构化 candidate patch。
+6. research 的用户可见产物是能力要求与达标水平报告，优先 HTML；它不是学习路线草案，不提前展开“先学什么后学什么”。
+6. 用户可见语言默认跟随当前会话语言；中文规划应产出中文报告、中文 lesson、中文题目和中文解析，代码标识符、命令、路径和原文引用可保留原语言。
+7. 正式状态与中间态分离：`.learn-workflow/*.json` 是 workflow 中间态，`learn-plan.md` 是正式长期状态。
+8. 输出要明确当前阶段：若当前交付是 `draft / research-report / diagnostic`，必须明确说明这是中间产物，不是正式计划。
+9. 统一质量字段必须显式保留：`generation_trace / quality_review / evidence / confidence / traceability`。
 
 ---
 
-# 3. 质量红线
-
-出现以下任一情况，视为计划质量不合格，不应直接写成正式 `learn-plan.md`：
-- 只有路线，没有顾问式澄清结果
-- 只有资料列表，没有能力要求与取舍依据
-- 仍主要依赖用户自报水平，未做最小验证
-- 学习风格 / 练习方式 / 掌握标准未确认
-- 主线资料大多不能落地到本地
-- 只有资料名或链接，没有章节/页码/小节/路径定位
-- 阶段目标与用户真实目标脱节
-- `/learn-today` 无法据此拆出具体当日安排
-
----
-
-# 4. workflow 模型
-
-## 4.1 顶层状态机
+# 3. workflow 顶层模型
 
 固定状态机：
 
@@ -123,172 +84,38 @@ clarification
   -> enter:/learn-today
 ```
 
-## 4.2 workflow 类型
-
-先识别本次属于哪一类：
+workflow 类型：
 - `light`
 - `diagnostic-first`
 - `research-first`
 - `mixed`
 
-简化判断：
-- 目标清楚、水平可信、无需外部职业/实践标准：`light`
-- 目标清楚但水平不可靠：`diagnostic-first`
-- 目标涉及岗位/求职/职业标准/复杂技术栈取舍：`research-first`
-- research 和 diagnostic 都不可跳过：`mixed`
-
-## 4.3 mode 约定
-
 `learn_plan.py` 的 mode：
-- `auto`：自动路由，不等于业务阶段
-- `draft`：clarification 或 plan draft/approval 阶段
-- `research-report`：research 阶段
-- `diagnostic`：diagnostic 阶段
-- `finalize`：正式落盘
+- `auto`
+- `draft`
+- `research-report`
+- `diagnostic`
+- `finalize`
 
 当脚本推荐 mode 与当前 mode 不一致时，应优先遵循推荐 mode，而不是强推当前 mode。
 
----
+各阶段细则按需读取：
+- clarification：`docs/clarification-stage.md`
+- research：`docs/research-stage.md`
+- diagnostic：`docs/diagnostic-stage.md`
+- approval：`docs/approval-stage.md`
+- finalize：`docs/finalize-stage.md`
 
-# 5. 执行顺序
-
-## 5.1 先确认学习根目录
-
-必须先确认：
-- 学习根目录
-- `learn-plan.md` 路径
-- `materials/` 目录
-- `sessions/` 目录
-
-默认建议结构：
-- `<root>/learn-plan.md`
-- `<root>/materials/index.json`
-- `<root>/sessions/`
-- `<root>/.learn-workflow/*.json`
-
-## 5.2 clarification
-
-至少收集并确认：
-- 学习主题
-- 学习目的 / 最终能力目标
-- 成功标准
-- 当前水平
-- 时间/频率约束
-- 学习偏好
-- 练习偏好
-- 希望如何检验掌握
-- **起始测评深度选择：simple 或 deep（二选一，不能默认）**
-- 已有本地资料
-- 非目标
-
-clarification 阶段的强约束：
-- 必须明确问用户：是想先做 `simple` 起点测评，还是愿意多花时间做 `deep` 起点测评。
-- 若用户尚未选择，则 `assessment_depth_preference = undecided`，并继续停留在 clarification；不要提前生成简单测评题，也不要直接开始规划。
-- 这个选择是 diagnostic gate 的前置条件，不是可选附加信息。
-
-输出：
-- 用户可见的画像确认与未决问题
-- 明确展示 simple / deep 选择是否已确认
-- 可写入 `clarification.json` 的结构化内容
-
-## 5.3 research（如需要）
-
-若目标涉及职业标准、岗位能力要求、材料取舍不明确、family 模板明显不够，则必须进入 research gate。
-
-顺序必须是：
-1. 先给 research plan 并确认
-2. 再做 research
-3. 单独形成“能力要求报告”
-
-能力要求报告至少包含：
-- 为达成目标需要哪些能力
-- 哪些是主线能力、支撑能力、后置能力
-- 为什么这么分
-- 依据哪些来源/证据
-- 这些结论如何影响后续测试与规划
-
-输出：
-- 用户可见 research plan / capability report
-- 可写入 `research.json` 的结构化内容
-
-## 5.4 diagnostic（如需要）
-
-必要时做最小水平诊断，而不是只信用户自报。
-
-进入 diagnostic 前必须已经确认：
-- `assessment_depth = simple`：少量题，目标是快速验证起点，完成后尽快进入规划。
-- `assessment_depth = deep`：允许多轮诊断；若 `follow_up_needed = true` 且未达到 `max_rounds`，继续停留在 diagnostic，不提前 finalize。
-
-诊断交付方式：
-- 起点测评题必须通过现有网页 session 四件套交付：`questions.json / progress.json / 题集.html / server.py`。
-- 用户在网页中完成作答后，再分析 `progress.json`，形成 `diagnostic_result` 和 `diagnostic_profile`。
-- 前置诊断的新 session 必须标记为 `assessment_kind = initial-test`、`session_intent = assessment`，并保留 `plan_execution_mode = diagnostic`；历史 `plan-diagnostic` 继续兼容读取。
-- 可以复用 `/learn-test` 的 runtime/session 基座生成网页，但结果解释和回写仍属于 `/learn-plan` 的起点诊断语义；不要把它当成普通 `stage-test` 结论。
-
-诊断形式可包括：
-- 口头解释题
-- 选择/判断题
-- 小代码题
-- 小项目/设计题
-- 阅读复盘
-
-要求：
-- 每题绑定 capability / expected signals / rubric
-- 批改后给出证据、缺口、recommended entry level、confidence
-- 若开放题仍待评阅，只能输出“待评阅/证据不足”，不得伪造已通过或已失败结论
-
-输出：
-- 用户可见网页 session 路径、浏览器地址、停服命令与作答说明
-- 用户完成作答后的诊断批改摘要
-- 可写入 `diagnostic.json` 的结构化内容
-
-执行约束：
-- 当 route summary 给出 `blocking_stage = diagnostic` 或 `next_action = switch_to:diagnostic` 时，不要继续在终端直接出诊断题。
-- 应立即调用现有 session runtime（`session_orchestrator.py`），生成 `questions.json / progress.json / 题集.html / server.py` 并启动网页 session。
-- 诊断网页 session 应复用测试链路启动方式，即调用 `session_orchestrator.py --session-type test --test-mode general`；runtime 会根据 `plan_execution_mode=diagnostic` 自动写入 `assessment_kind = initial-test` 与 `session_intent = assessment`。
-- 只有在用户完成网页作答后，才读取 `progress.json` 并进入 diagnostic result / profile 分析；不要在网页作答前用终端问答替代。
-
-## 5.5 approval
-
-在正式规划前，必须确认：
-- 偏讲解 / 偏练习 / 偏项目 / 混合
-- 先讲后练 / 先测后讲 / 边讲边练
-- 更偏哪些题型
-- 更看重速度、扎实度、项目产出还是求职匹配
-
-计划草案至少包含：
-- 学习画像
-- 规划假设与约束
-- 能力指标与起点判断
-- 检索结论与取舍
-- 阶段路线
-- 资料角色划分
-- 掌握标准
-
-输出：
-- 计划草案
-- 待确认 tradeoff 与决策
-- 可写入 `approval.json` 的结构化内容
-
-## 5.6 finalize
-
-只有满足以下条件才允许正式写计划：
-- clarification 完成
-- 必要 research 完成
-- diagnostic 完成
-- approval 完成
-- 通过质量验收清单
-
-正式输出：
-- `learn-plan.md`
-- `materials/index.json`
-- 可选自动下载结果摘要
-
-生成 `materials/index.json` 后，仅在 `finalize` 且未跳过下载时自动执行一次材料下载。
+横切文档：
+- 契约：`docs/contracts.md`
+- 状态文件：`docs/state-files.md`
+- 运行时兼容：`docs/runtime-compatibility.md`
+- 执行器规则：`docs/skill-operator-guide.md`
+- 架构设计：`WORKFLOW_DESIGN.md`
 
 ---
 
-# 6. route summary 驱动规则
+# 4. route summary 驱动规则
 
 推荐外层执行循环：
 1. 先用 `--mode auto` 运行 `learn_plan.py`
@@ -297,18 +124,28 @@ clarification 阶段的强约束：
    - `blocking_stage`
    - `recommended_mode`
    - `next_action`
-   - `missing_requirements`
-   - `quality_issues`
-3. 若仍是中间产物，则进入下一轮 workflow
-4. 若 `next_action = switch_to:diagnostic`，表示应切到现有 session runtime 启动网页 diagnostic session，而不是继续在终端文本出题。
+   - `actionable_missing_requirements`
+   - `reference_missing_requirements`
+   - `actionable_quality_issues`
+   - `workflow_instruction`
+   - `stage_exit_contract`
+   - `stage_exit_missing_values`
+   - `stage_exit_user_visible_next_step`
+3. 若仍是中间产物，则继续下一轮 workflow
+4. 若 `next_action = switch_to:diagnostic`，表示应切到现有 session runtime 启动网页 diagnostic session，而不是继续在终端文本出题
 5. 只有当 `next_action = enter:/learn-today` 时才退出 `/learn-plan`
 
-强约束决策：
+强约束：
 - `blocking_stage = clarification`：继续追问，不进入 research / diagnostic / finalize
 - `blocking_stage = research`：先 research plan，再 research report，不 finalize
 - `blocking_stage = diagnostic`：先诊断，不 finalize
 - `blocking_stage = approval`：先确认草案，不 finalize
-- `blocking_stage = ready`：才允许 `finalize`
+- `blocking_stage = planning`：这是 finalize 前的过渡态，不是回退
+- `blocking_stage = ready`：才允许 finalize
+
+当 `should_continue_workflow = true` 时：
+- 必须优先继续 workflow
+- 不得通过手动补 `.learn-workflow/*.json` 或手填 diagnostic blueprint 跳过当前 gate
 
 停止条件必须同时满足：
 - `should_continue_workflow = false`
@@ -317,7 +154,7 @@ clarification 阶段的强约束：
 
 ---
 
-# 7. 推荐 CLI 调用
+# 5. 执行入口
 
 推荐入口：
 
@@ -334,34 +171,32 @@ python3 "$HOME/.claude/skills/learn-plan/learn_plan.py" \
   --stdout-json
 ```
 
-可选中间态输入：
-- `--clarification-json`
-- `--research-json`
-- `--diagnostic-json`
-- `--approval-json`
+selective subagent strategy 执行约束：
+- 主 agent 可直接完成澄清追问、route 编排、字段映射、小范围 schema/前端修复、CLI 验证和本地 smoke；不要为了这些窄任务派 subagent。
+- search/source discovery 与 research analysis 必须派发 Agent subagent 完成；当前主会话不得直接调用 `WebSearch` / `WebFetch` 来替代 research subagent。
+- 出题、严格审题、planning candidate、semantic review、diagnostic blueprint 等重语义 artifact 必须由 Agent subagent 生成；主会话只负责转交 artifact，不直接撰写这些 artifact。
+- research 阶段必须向用户返回一份可读的能力要求与达标水平报告，详细版优先 HTML，再把结构化 JSON 注入 `learn_plan.py`；不能只写 workflow JSON 而不展示报告。
+- 当执行器已经拿到合法 JSON 时，应通过以下参数把结果注入 `learn_plan.py`，让 Python 只负责 gate、状态落盘与正式产物生成：
+  - `--stage-candidate-json`
+  - `--stage-review-json`
+  - `--planning-candidate-json`
+  - `--planning-review-json`
+- 缺出题/审题 artifact 或重语义 artifact 时必须阻断并重新生成，不静默 fallback 到内置题库；`--stage-review-json` / `--planning-review-json` 只补充 `semantic_issues / improvement_suggestions`，不替代确定性 contract review。
+- 所有 runtime 题目统一按 test-grade 标准处理，不区分学习题和测试题。
 
-可选跳过下载：
-- `--skip-material-download`
-
-当 route summary 返回 `next_action = switch_to:diagnostic` 时，执行器应立即转为启动网页 diagnostic session，而不是继续文本问答。推荐调用：
+当 `next_action = switch_to:diagnostic` 时，执行器应立即转为启动网页 diagnostic session，而不是继续文本问答。推荐调用：
 
 ```bash
 python3 "$HOME/.claude/skills/learn-plan/session_orchestrator.py" \
   --session-type test \
   --test-mode general \
   --plan-path "<root>/learn-plan.md" \
-  --session-dir "<root>/sessions/<YYYY-MM-DD>-diagnostic"
+  --session-dir "<root>/sessions/<YYYY-MM-DD>-test"
 ```
-
-说明：
-- `session_dir` 应使用独立的 diagnostic 目录，避免和正式 `/learn-today` session 混淆。
-- 若该目录下四件套已完整，则继续当前 diagnostic session，而不是无理由重建。
-- 启动后只向用户汇报：session 目录、浏览器地址、手动停服命令、作答完成后应执行 `/learn-test-update`。
-- 不要把 `questions.json` 里的题面再复制成终端文本逐题发给用户。
 
 ---
 
-# 8. 输出约定
+# 6. 输出约定
 
 终端输出保持简短，只保留：
 - 学习主题
@@ -375,9 +210,12 @@ python3 "$HOME/.claude/skills/learn-plan/session_orchestrator.py" \
 - 当前是中间产物
 - 当前卡在哪个 stage
 - 下一步需要用户提供什么或确认什么
+- 当前只应处理什么
+- 哪些只是后续参考，暂不处理
+- 不要手动补 `.learn-workflow/*.json` 或 diagnostic blueprint
 
 ---
 
-# 9. 一句话原则
+# 7. 一句话原则
 
-`/learn-plan` 不是“一次性计划生成器”，而是一个 **先澄清、再 research、再诊断、再确认、最后正式落盘** 的多轮学习顾问工作流。
+`/learn-plan` 不是“一次性计划生成器”，而是一个先澄清、再 research、再诊断、再确认、最后正式落盘的多轮学习顾问工作流。

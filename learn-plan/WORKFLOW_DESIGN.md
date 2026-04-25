@@ -23,6 +23,12 @@
 - **整个 skill 簇统一演进**：`/learn-plan`、daily teacher、test、update、materials 不再作为松散脚本各自演化。
 
 相关细化文档：
+- 顶层 skill 协议：`SKILL.md`
+- clarification 阶段：`docs/clarification-stage.md`
+- research 阶段：`docs/research-stage.md`
+- diagnostic 阶段：`docs/diagnostic-stage.md`
+- approval 阶段：`docs/approval-stage.md`
+- finalize 阶段：`docs/finalize-stage.md`
 - 数据契约：`docs/contracts.md`
 - 状态文件所有权：`docs/state-files.md`
 - 运行时兼容边界：`docs/runtime-compatibility.md`
@@ -248,7 +254,7 @@
 - 读取 `materials/index.json`。
 - 读取最近 `progress.json` 与 `learner_model.json`。
 - 结合用户 check-in 生成 session plan。
-- 生成 `lesson.md` 与 daily/test lesson plan。
+- 生成 today 讲解结构与 canonical `learn-today-YYYY-MM-DD.md`，并为 daily/test 题目生成提供 lesson plan。
 - 做 material grounding。
 - 生成题目并保证题目可追踪到 lesson / capability / segment。
 - 组装 `questions.json`。
@@ -267,7 +273,7 @@
 - 用户 check-in
 
 **输出**：
-- `lesson.md`
+- `learn-today-YYYY-MM-DD.md`（today 主路径的 canonical 讲解文件）
 - `questions.json`
 - `progress.json`
 - `题集.html`
@@ -448,7 +454,7 @@
 
 /learn-today|/learn-test:
 learn-plan.md + materials/index.json + learner_model.json + progress history + check-in
--> session plan -> lesson.md -> questions.json -> progress.json -> runtime
+-> session plan -> learn-today-YYYY-MM-DD.md / test lesson context -> questions.json -> progress.json -> runtime
 
 /learn-today-update|/learn-test-update:
 questions.json + progress.json
@@ -491,6 +497,8 @@ LLM 在 intake 后先判断类型：
 | `research-first` | 目标涉及岗位/职业/材料取舍/复杂实践标准 | clarification -> research -> diagnostic -> approval -> finalize |
 | `mixed` | research 与 diagnostic 都不可跳过 | clarification -> research -> diagnostic -> approval -> finalize |
 
+注意：`workflow_type` 是 intake 阶段的首次路由分类，用来描述这次 workflow 起步时选择了哪条路径；后续即使已经进入 `diagnostic / approval / finalize`，也应继续保留原值，而不是按当前 `blocking_stage` 重新分类。
+
 ## 7.3 mode 映射
 
 | 概念阶段 | CLI mode | 说明 |
@@ -515,6 +523,7 @@ LLM 在 intake 后先判断类型：
 - LLM 负责生成 candidate 内容，也可以生成 reviewer 所需的候选分析，但不直接拥有放行权。
 - reviewer 负责输出 `quality_review`，说明当前 candidate 是否 ready、缺什么、证据是否充分。
 - deterministic gate 负责读取中间态与 `quality_review`，决定 `blocking_stage`、`quality_issues`、`next_action`。
+- 若前序 gate 已满足、但结构化 `plan_candidate` 尚未准备好，gate 可以返回 `blocking_stage=planning`；这表示正在进入 formal renderer 前的过渡态，不表示回退到 clarification/research/diagnostic/approval。
 - `finalize` 只消费已通过 gate 的结构化状态，并由 renderer 写正式 `learn-plan.md`；LLM 不直接写最终正式计划正文。
 - runtime / feedback 也继承同一套字段，保证 lesson、questions、learner model、patch queue 能沿统一 traceability 审计。
 
@@ -522,7 +531,7 @@ LLM 在 intake 后先判断类型：
 
 ### Phase 1：Clarification
 
-**触发**：首次 `/learn-plan`、`blocking_stage=clarification|preference`。
+**触发**：首次 `/learn-plan`、`blocking_stage=clarification`。
 
 **输入**：用户需求、旧计划画像、已有 `clarification.json`、材料路径、时间约束。
 
@@ -639,12 +648,12 @@ LLM 在 intake 后先判断类型：
 Daily Teacher 阶段的 LLM 不是重新规划长期路线，而是做当天教学：
 
 1. **进度解释**：结合长期计划、历史 progress、用户 check-in 判断今天应复习/推进/回炉什么。
-2. **讲课**：围绕当天 capability / material segment 生成 `lesson.md`。
-3. **阅读指导**：明确资料、章节、页码、小节或 repo 目录。
-4. **出题**：题目绑定 lesson section、capability、material segment 或 source excerpt。
+2. **讲课**：围绕当天 capability / material segment 生成 canonical `learn-today-YYYY-MM-DD.md`，固定为四部分：你阅读了哪些材料 / 今日重点要掌握哪些知识 / 项目驱动的知识点讲解和相关扩展 / 建议复习。
+3. **阅读指导**：明确资料、章节、页码、小节或 repo 目录，只列实际用到的材料片段。
+4. **出题**：题目绑定 lesson section、capability、material segment 或 source excerpt，并显式对齐 `lesson_focus_points`、`project_tasks` / `project_blockers`、`review_targets`。
 5. **测试聚焦**：`/learn-test` 时根据测试模式选择覆盖范围与薄弱点。
-6. **质量校验**：代码侧对 `questions.json` 执行 deterministic validation，检查 schema、答案/解析、来源标记、fallback 比例与 traceability。
-7. **失败回退**：LLM 不可用或 JSON 校验失败时，回退 source excerpt 题，再回退内置题库。
+6. **质量校验**：代码侧对 `questions.json` 执行 deterministic validation；同时保留 lesson reviewer 与 question reviewer 两层 review，严格审题失败时阻断 session 启动。
+7. **缺出题/审题 artifact**：缺出题/审题 artifact 或 JSON 校验失败时，Python 只返回 blocked state；主 agent 重新派发 subagent 修复，不静默 fallback 到内置题库。
 
 ## 8.4 Runtime pipeline
 
@@ -663,7 +672,7 @@ plan parser
 ## 8.5 完成条件
 
 必须生成或继续完整 session：
-- `lesson.md`
+- `learn-today-YYYY-MM-DD.md`（today 主路径的 canonical 讲解文件）
 - `questions.json`
 - `progress.json`
 - `题集.html`
@@ -746,7 +755,7 @@ update 输出分三层：
 
 - 材料下载失败：标记 `download-failed`，不阻断计划。
 - 预处理失败：回退 metadata-only。
-- source excerpt 缺失：题目生成回退到 lesson 内容，再回退内置题库。
+- source excerpt 缺失：记录 grounding 风险；若无法生成合格出题/审题 artifact，则阻断 session 启动并重新生成 artifact。
 
 ---
 
@@ -895,7 +904,7 @@ update 输出分三层：
    - 控制：只有 `finalize` 和 approved patch 可写 `learn-plan.md` 主体。
 
 2. **runtime 拆分导致题目生成漂移**
-   - 控制：第一轮只搬现有逻辑，保留 LLM -> content-derived -> bank fallback 顺序。
+   - 控制：题目统一按 test-grade 契约生成和校验；缺出题/审题 artifact 时阻断并重新生成，不静默 fallback。
 
 3. **learner model 变成第二个混乱主状态源**
    - 控制：learner model 只保存能力证据与复习债，正式 curriculum 仍以 `learn-plan.md` 为主。

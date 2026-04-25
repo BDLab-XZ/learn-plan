@@ -1,18 +1,74 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from learn_core.quality_review import apply_quality_envelope, build_traceability_entry, normalize_confidence
 from learn_core.text_utils import normalize_string_list
-from learn_runtime.question_generation import is_valid_runtime_question
+from learn_runtime.question_generation import (
+    build_semantic_trace_snapshot,
+    is_valid_runtime_question,
+    normalize_question_repair_plan,
+)
+from learn_runtime.schemas import REQUIRED_QUESTIONS_TOP_LEVEL, preflight_code_question_tests, validate_questions_basic, validate_test_grade_question
 
 
-REQUIRED_TOP_LEVEL = ["date", "topic", "mode", "session_type", "test_mode", "plan_source", "materials", "questions"]
+REQUIRED_TOP_LEVEL = REQUIRED_QUESTIONS_TOP_LEVEL
 FALLBACK_SOURCE_STATUSES = {"fallback-metadata", "metadata-fallback", "domain-bank-fallback", "bank-fallback"}
+CJK_RE = re.compile(r"[一-鿿]")
+LATIN_WORD_RE = re.compile(r"\b[A-Za-z][A-Za-z'\-]{2,}\b")
+CODEISH_RE = re.compile(r"(`[^`]+`|\b[a-zA-Z_][\w.]*\(|\b[a-zA-Z_][\w]*_[\w_]*\b|/[\w./-]+|\b\w+\.py\b|\b[A-Z][A-Za-z0-9]*(?:API|SDK|CLI)\b)")
+
+
+def _normalize_language_policy(value: Any) -> dict[str, Any]:
+    policy = value if isinstance(value, dict) else {}
+    user_facing_language = str(policy.get("user_facing_language") or "").strip()
+    return {
+        "user_facing_language": user_facing_language,
+        "localization_required": bool(policy.get("localization_required", True)),
+    }
+
+
+def _strip_codeish_text(value: str) -> str:
+    return CODEISH_RE.sub(" ", value)
+
+
+def _visible_text_language_warning(text: Any, expected_language: str, label: str) -> str | None:
+    value = _strip_codeish_text(str(text or "").strip())
+    if len(value) < 24:
+        return None
+    cjk_count = len(CJK_RE.findall(value))
+    latin_count = len(LATIN_WORD_RE.findall(value))
+    if expected_language.lower().startswith("zh") and latin_count >= 8 and cjk_count < 4:
+        return f"{label}: 用户可见文本疑似未遵守中文 language_policy"
+    if expected_language.lower().startswith("en") and cjk_count >= 8 and latin_count < 4:
+        return f"{label}: 用户可见文本疑似未遵守英文 language_policy"
+    return None
+
+
+def _collect_question_language_warnings(item: dict[str, Any], expected_language: str) -> list[str]:
+    qid = str(item.get("id") or "<missing-id>")
+    warnings: list[str] = []
+    for key in ("title", "question", "prompt", "description", "explanation", "grading_hint"):
+        warning = _visible_text_language_warning(item.get(key), expected_language, f"{qid}.{key}")
+        if warning:
+            warnings.append(warning)
+    for index, option in enumerate(item.get("options") or []):
+        warning = _visible_text_language_warning(option, expected_language, f"{qid}.options[{index}]")
+        if warning:
+            warnings.append(warning)
+    for index, point in enumerate(item.get("reference_points") or []):
+        warning = _visible_text_language_warning(point, expected_language, f"{qid}.reference_points[{index}]")
+        if warning:
+            warnings.append(warning)
+    return warnings
 
 
 def question_source_marker(item: dict[str, Any]) -> str:
-    for key in ("source_status", "source_trace", "source_segment_id", "source_material_title", "material_segment_id"):
+    source_trace = item.get("source_trace") if isinstance(item.get("source_trace"), dict) else {}
+    if source_trace:
+        return str(source_trace.get("question_source") or source_trace.get("diagnostic_generation_mode") or source_trace.get("segment_id") or "source_trace")
+    for key in ("source_status", "source_segment_id", "source_material_title", "material_segment_id"):
         value = item.get(key)
         if value:
             return str(value)
@@ -20,8 +76,8 @@ def question_source_marker(item: dict[str, Any]) -> str:
     if "content-derived" in tags:
         return str(item.get("source_status") or "content-derived")
     if "lesson-derived" in tags:
-        return str(item.get("source_trace") or "daily_lesson_plan")
-    return "bank-fallback"
+        return "daily_lesson_plan"
+    return "missing-source-trace"
 
 
 def question_has_answer_and_explanation(item: dict[str, Any]) -> bool:
@@ -72,13 +128,16 @@ def validate_question_item(item: Any) -> list[str]:
     if not isinstance(item, dict):
         return ["题目不是 object"]
     qid = str(item.get("id") or "<missing-id>")
-    if not is_valid_runtime_question(item):
+    test_grade_issues = validate_test_grade_question(item)
+    if test_grade_issues:
+        issues.extend(f"{qid}: {issue}" for issue in test_grade_issues)
+    if not is_valid_runtime_question(item) and not test_grade_issues:
         issues.append(f"{qid}: schema 不合法")
     if not question_has_answer_and_explanation(item):
         issues.append(f"{qid}: 缺少答案或解析/参考解")
     marker = question_source_marker(item)
-    if not marker:
-        issues.append(f"{qid}: 缺少来源或 fallback 标记")
+    if not marker or marker == "missing-source-trace":
+        issues.append(f"{qid}: 缺少可追踪来源：需要 source_trace / source_segment_id / material_segment_id / lesson-derived / content-derived / diagnostic capability trace")
     if str(item.get("question_role") or "").strip() == "":
         tags = normalize_string_list(item.get("tags"))
         if "content-derived" in tags or "lesson-derived" in tags:
@@ -86,26 +145,93 @@ def validate_question_item(item: Any) -> list[str]:
     return issues
 
 
+def summarize_question_repair_plan(review: dict[str, Any]) -> dict[str, Any]:
+    repair_plan = normalize_question_repair_plan(review.get("repair_plan")) if isinstance(review, dict) else normalize_question_repair_plan({})
+    coverage_gaps = repair_plan.get("coverage_gaps") if isinstance(repair_plan.get("coverage_gaps"), dict) else {}
+    capability_gaps = repair_plan.get("capability_gaps") if isinstance(repair_plan.get("capability_gaps"), dict) else {}
+    minimum_pass_shape = repair_plan.get("minimum_pass_shape") if isinstance(repair_plan.get("minimum_pass_shape"), dict) else {}
+    missing_shape: list[str] = []
+    for key in ("lesson_focus", "project", "review", "explicit_project", "explicit_review"):
+        if bool(coverage_gaps.get(key)):
+            missing_shape.append(f"coverage:{key}")
+    for category in normalize_string_list(coverage_gaps.get("missing_primary_categories") or []):
+        missing_shape.append(f"primary_category:{category}")
+    for capability_id in normalize_string_list(capability_gaps.get("missing") or []):
+        missing_shape.append(f"capability:{capability_id}")
+    required_open_question_count = int(minimum_pass_shape.get("required_open_question_count") or 0)
+    required_code_question_count = int(minimum_pass_shape.get("required_code_question_count") or 0)
+    if required_open_question_count > 0:
+        missing_shape.append(f"required_open_question_count:{required_open_question_count}")
+    if required_code_question_count > 0:
+        missing_shape.append(f"required_code_question_count:{required_code_question_count}")
+    forbidden_patterns = normalize_string_list(minimum_pass_shape.get("forbidden_patterns") or [])
+    if forbidden_patterns:
+        missing_shape.append("forbidden_patterns:" + ",".join(forbidden_patterns[:4]))
+    failure_summary = normalize_string_list(
+        [
+            *[f"failure_code:{code}" for code in normalize_string_list(repair_plan.get("failure_codes") or [])[:8]],
+            *[f"evidence_gap:{gap}" for gap in normalize_string_list(repair_plan.get("evidence_gaps") or [])[:8]],
+            *missing_shape[:12],
+        ]
+    )
+    return {
+        "blocking": bool(repair_plan.get("blocking")),
+        "failure_summary": failure_summary,
+        "minimum_pass_shape": minimum_pass_shape,
+        "coverage_gaps": coverage_gaps,
+        "capability_gaps": capability_gaps,
+        "repair_actions": repair_plan.get("repair_actions") if isinstance(repair_plan.get("repair_actions"), list) else [],
+    }
+
+
 def validate_questions_payload(data: dict[str, Any]) -> dict[str, Any]:
-    issues: list[str] = []
+    issues: list[str] = validate_questions_basic(data)
     warnings: list[str] = []
-    for key in REQUIRED_TOP_LEVEL:
-        if key not in data:
-            issues.append(f"questions.json 缺少字段: {key}")
+
     questions = data.get("questions")
     if not isinstance(questions, list) or not questions:
-        issues.append("questions 必须是非空列表")
         questions = []
+
+    language_policy = _normalize_language_policy(data.get("language_policy"))
+    if not language_policy.get("user_facing_language"):
+        issues.append("questions.json 缺少有效 language_policy.user_facing_language")
+    plan_source = data.get("plan_source") if isinstance(data.get("plan_source"), dict) else {}
+    selection_context = data.get("selection_context") if isinstance(data.get("selection_context"), dict) else {}
+    plan_language_policy = _normalize_language_policy(plan_source.get("language_policy"))
+    selection_language_policy = _normalize_language_policy(selection_context.get("language_policy"))
+    if plan_language_policy.get("user_facing_language") and language_policy.get("user_facing_language") and plan_language_policy.get("user_facing_language") != language_policy.get("user_facing_language"):
+        issues.append("questions.json language_policy 与 plan_source.language_policy 不一致")
+    if selection_language_policy.get("user_facing_language") and language_policy.get("user_facing_language") and selection_language_policy.get("user_facing_language") != language_policy.get("user_facing_language"):
+        warnings.append("selection_context.language_policy 与顶层 language_policy 不一致")
+    grounding_context = plan_source.get("lesson_grounding_context") if isinstance(plan_source.get("lesson_grounding_context"), dict) else {}
+    daily_lesson_plan = selection_context.get("daily_lesson_plan") if isinstance(selection_context.get("daily_lesson_plan"), dict) else {}
+    semantic_trace = build_semantic_trace_snapshot(grounding_context, daily_lesson_plan)
+    semantic_profile = str(semantic_trace.get("semantic_profile") or "today").strip() or "today"
+    minimum_pass_shape = semantic_trace.get("minimum_pass_shape") if isinstance(semantic_trace.get("minimum_pass_shape"), dict) else {}
+    required_primary_categories = normalize_string_list(minimum_pass_shape.get("required_primary_categories") or [])
+    required_capability_coverage = normalize_string_list(minimum_pass_shape.get("required_capability_coverage") or [])
+    required_open_question_count = max(0, int(minimum_pass_shape.get("required_open_question_count") or 0))
+    required_code_question_count = max(0, int(minimum_pass_shape.get("required_code_question_count") or 0))
+
     ids: set[str] = set()
     source_markers: list[str] = []
     fallback_count = 0
     category_counts: dict[str, int] = {}
+    primary_category_counts: dict[str, int] = {}
+    capability_counts: dict[str, int] = {}
     traceability: list[dict[str, Any]] = []
+
     for item in questions:
         if isinstance(item, dict):
             qid = str(item.get("id") or "")
             category = str(item.get("category") or "unknown")
             category_counts[category] = category_counts.get(category, 0) + 1
+            source_trace = item.get("source_trace") if isinstance(item.get("source_trace"), dict) else {}
+            primary_category = str(item.get("primary_category") or source_trace.get("primary_category") or "").strip()
+            if primary_category:
+                primary_category_counts[primary_category] = primary_category_counts.get(primary_category, 0) + 1
+            for capability_id in normalize_string_list(item.get("target_capability_ids") or source_trace.get("target_capability_ids") or []):
+                capability_counts[capability_id] = capability_counts.get(capability_id, 0) + 1
             if not qid:
                 issues.append("存在题目缺少 id")
             elif qid in ids:
@@ -127,20 +253,104 @@ def validate_questions_payload(data: dict[str, Any]) -> dict[str, Any]:
                     locator=question_traceability_locator(item),
                 )
             )
+        if isinstance(item, dict) and language_policy.get("localization_required") and language_policy.get("user_facing_language"):
+            warnings.extend(_collect_question_language_warnings(item, str(language_policy.get("user_facing_language") or "")))
         issues.extend(validate_question_item(item))
+        if isinstance(item, dict) and (str(item.get("type") or "").strip() == "code" or str(item.get("category") or "").strip() == "code"):
+            issues.extend(f"{str(item.get('id') or '<missing-id>')}: {issue}" for issue in preflight_code_question_tests(item))
+
+    content_generation = selection_context.get("content_question_generation") if isinstance(selection_context.get("content_question_generation"), dict) else {}
+    grounded_generation_shortfalls = normalize_string_list(content_generation.get("grounded_generation_shortfalls") or [])
+    bank_fallback_used = bool(content_generation.get("bank_fallback_used"))
+    question_generation_mode = str(plan_source.get("question_generation_mode") or "").strip()
+    deterministic_question_review = plan_source.get("deterministic_question_review") if isinstance(plan_source.get("deterministic_question_review"), dict) else {}
+    strict_question_review = plan_source.get("strict_question_review") if isinstance(plan_source.get("strict_question_review"), dict) else {}
+    aggregated_question_review = plan_source.get("question_review") if isinstance(plan_source.get("question_review"), dict) else {}
+    deterministic_repair_summary = summarize_question_repair_plan(deterministic_question_review)
+    strict_repair_summary = summarize_question_repair_plan(strict_question_review)
+    aggregated_repair_summary = summarize_question_repair_plan(aggregated_question_review)
+
+    missing_trace_count = sum(1 for marker in source_markers if marker == "missing-source-trace")
+    if missing_trace_count:
+        issues.append(f"存在 {missing_trace_count} 道题缺少可靠 source grounding")
     if questions and fallback_count == len(questions):
-        warnings.append("所有题目均为 fallback 来源，未能形成可靠 source grounding")
+        issues.append("所有题目均为 fallback 来源，未能形成可靠 source grounding")
     if questions and not category_counts.get("concept"):
         warnings.append("本次 payload 没有 concept 题")
+    if bank_fallback_used:
+        issues.append("当前配置不允许题库兜底，但检测到 bank fallback")
+    if grounded_generation_shortfalls:
+        issues.append("grounded 题目生成不足：" + "；".join(grounded_generation_shortfalls))
+    if question_generation_mode == "grounded-generation-missing":
+        issues.append("question_generation_mode=grounded-generation-missing，当前应阻断并重生成")
+
+    if semantic_profile in {"initial-test", "stage-test"}:
+        if not semantic_trace.get("assessment_kind"):
+            issues.append(f"{semantic_profile} 缺少 assessment_kind")
+        if semantic_trace.get("session_intent") != "assessment":
+            issues.append(f"{semantic_profile} 的 session_intent 必须为 assessment")
+        if not semantic_trace.get("target_capability_ids"):
+            issues.append(f"{semantic_profile} 缺少 target_capability_ids")
+        if semantic_profile == "initial-test" and not semantic_trace.get("diagnostic_generation_mode"):
+            issues.append("initial-test 缺少 diagnostic_generation_mode")
+
+        missing_primary_categories = [category for category in required_primary_categories if primary_category_counts.get(category, 0) <= 0]
+        if missing_primary_categories:
+            issues.append(f"{semantic_profile} 缺少 required_primary_categories: {', '.join(missing_primary_categories[:6])}")
+        missing_capability_coverage = [capability for capability in required_capability_coverage if capability_counts.get(capability, 0) <= 0]
+        if missing_capability_coverage:
+            issues.append(f"{semantic_profile} 缺少 required_capability_coverage: {', '.join(missing_capability_coverage[:6])}")
+        if category_counts.get("open", 0) < required_open_question_count:
+            issues.append(f"{semantic_profile} open 题数量不足: {category_counts.get('open', 0)}/{required_open_question_count}")
+        if category_counts.get("code", 0) < required_code_question_count:
+            issues.append(f"{semantic_profile} code 题数量不足: {category_counts.get('code', 0)}/{required_code_question_count}")
+
+    if strict_question_review and not bool(strict_question_review.get("valid")):
+        strict_issues = normalize_string_list(strict_question_review.get("issues") or [])
+        strict_failure_summary = strict_repair_summary.get("failure_summary") if isinstance(strict_repair_summary, dict) else []
+        issues.append(
+            "strict_question_review 未通过"
+            + ("：" + "；".join(strict_issues[:4]) if strict_issues else "")
+            + ("；repair=" + "，".join(normalize_string_list(strict_failure_summary)[:4]) if strict_failure_summary else "")
+        )
+    if deterministic_question_review and not bool(deterministic_question_review.get("valid")):
+        deterministic_issues = normalize_string_list(deterministic_question_review.get("issues") or [])
+        deterministic_failure_summary = deterministic_repair_summary.get("failure_summary") if isinstance(deterministic_repair_summary, dict) else []
+        issues.append(
+            "deterministic_question_review 未通过"
+            + ("：" + "；".join(deterministic_issues[:4]) if deterministic_issues else "")
+            + ("；repair=" + "，".join(normalize_string_list(deterministic_failure_summary)[:4]) if deterministic_failure_summary else "")
+        )
+    if aggregated_question_review and not bool(aggregated_question_review.get("valid")):
+        aggregated_issues = normalize_string_list(aggregated_question_review.get("issues") or [])
+        aggregated_failure_summary = aggregated_repair_summary.get("failure_summary") if isinstance(aggregated_repair_summary, dict) else []
+        issues.append(
+            "question_review 聚合结论未通过"
+            + ("：" + "；".join(aggregated_issues[:4]) if aggregated_issues else "")
+            + ("；repair=" + "，".join(normalize_string_list(aggregated_failure_summary)[:6]) if aggregated_failure_summary else "")
+        )
 
     evidence = normalize_string_list(
         [
+            *[f"semantic_profile={semantic_profile}"],
+            *([f"language_policy={language_policy.get('user_facing_language')}"] if language_policy.get("user_facing_language") else []),
+            *([f"assessment_kind={semantic_trace.get('assessment_kind')}"] if semantic_trace.get("assessment_kind") else []),
+            *([f"session_intent={semantic_trace.get('session_intent')}"] if semantic_trace.get("session_intent") else []),
+            *([f"diagnostic_generation_mode={semantic_trace.get('diagnostic_generation_mode')}"] if semantic_trace.get("diagnostic_generation_mode") else []),
             *[f"题目总数 {len(questions)}"],
             *[f"fallback 题数 {fallback_count}"],
             *[f"类别 {key}:{value}" for key, value in sorted(category_counts.items())],
+            *([f"required_primary_categories={','.join(required_primary_categories[:6])}"] if required_primary_categories else []),
+            *([f"required_capability_coverage={','.join(required_capability_coverage[:6])}"] if required_capability_coverage else []),
+            *([f"strict_review={strict_question_review.get('verdict')}"] if strict_question_review else []),
+            *([f"deterministic_review={deterministic_question_review.get('verdict')}"] if deterministic_question_review else []),
+            *([f"strict_repair={'|'.join(normalize_string_list(strict_repair_summary.get('failure_summary') or [])[:3])}"] if strict_question_review else []),
+            *([f"deterministic_repair={'|'.join(normalize_string_list(deterministic_repair_summary.get('failure_summary') or [])[:3])}"] if deterministic_question_review else []),
+            *([f"aggregated_repair={'|'.join(normalize_string_list(aggregated_repair_summary.get('failure_summary') or [])[:4])}"] if aggregated_question_review else []),
             *source_markers[:6],
         ]
-    )[:20]
+    )[:24]
+
     confidence = 0.85 if not issues else 0.35
     if warnings:
         confidence = min(confidence, 0.65)
@@ -153,9 +363,42 @@ def validate_questions_payload(data: dict[str, Any]) -> dict[str, Any]:
         "warnings": warnings,
         "question_count": len(questions),
         "category_counts": category_counts,
+        "primary_category_counts": primary_category_counts,
+        "capability_counts": capability_counts,
         "fallback_count": fallback_count,
         "source_markers": source_markers[:20],
+        "semantic_trace": semantic_trace,
+        "repair_summary": {
+            "deterministic": deterministic_repair_summary,
+            "strict": strict_repair_summary,
+            "aggregated": aggregated_repair_summary,
+        },
     }
+
+    if aggregated_repair_summary.get("failure_summary"):
+        for item in normalize_string_list(aggregated_repair_summary.get("failure_summary") or [])[:8]:
+            traceability.append(
+                build_traceability_entry(
+                    kind="repair-gap",
+                    ref=item,
+                    title=item,
+                    detail="question_review.repair_plan",
+                    stage="questions",
+                    status="needs-revision",
+                )
+            )
+
+    traceability.append(
+        build_traceability_entry(
+            kind="session-semantics",
+            ref=semantic_profile,
+            title=semantic_profile,
+            detail=(semantic_trace.get("assessment_kind") or semantic_trace.get("session_intent") or "session-semantics"),
+            stage="questions",
+            status="validated" if not issues else "needs-revision",
+        )
+    )
+
     return apply_quality_envelope(
         result,
         stage="questions",
@@ -177,8 +420,11 @@ def validate_questions_payload(data: dict[str, Any]) -> dict[str, Any]:
             "status": "validated",
             "question_count": len(questions),
             "fallback_count": fallback_count,
+            "semantic_profile": semantic_profile,
+            "assessment_kind": semantic_trace.get("assessment_kind"),
+            "session_intent": semantic_trace.get("session_intent"),
         },
-        traceability=traceability[:20],
+        traceability=traceability[:24],
     )
 
 

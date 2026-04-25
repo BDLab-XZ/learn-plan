@@ -16,17 +16,16 @@
 ```text
 <root>/
 ├── learn-plan.md
+├── learn-today-YYYY-MM-DD.md
 ├── materials/
 │   └── index.json
 ├── sessions/
 │   ├── YYYY-MM-DD/
-│   │   ├── lesson.md
 │   │   ├── questions.json
 │   │   ├── progress.json
 │   │   ├── 题集.html
 │   │   └── server.py
 │   └── YYYY-MM-DD-test/
-│       ├── lesson.md
 │       ├── questions.json
 │       ├── progress.json
 │       ├── 题集.html
@@ -120,11 +119,12 @@ update 脚本可以追加：
 
 允许写入者：
 - planning/materials planner：生成与更新材料策略
-- downloader：只更新下载与缓存相关字段
+- downloader：只更新下载与缓存相关字段（`cache_status`、`local_path`、`cached_at`、`last_attempt`）；`cache_note`、`exists_locally`、`local_artifact` 仅 legacy 只读兼容
 - preprocessing：只更新 source excerpt、segment cache、预处理状态字段
 
 不允许：
 - runtime 为了临时 session 随意重排主线材料
+- downloader 改写 `availability`、`selection_status`、`role_in_plan`、`goal_alignment`、`reading_segments`、`mastery_checks` 等 planner 字段
 - update 未经批准直接删除主线资料
 
 ---
@@ -144,6 +144,8 @@ workflow 中间态保存在：
 - 不直接展示为正式学习计划
 - 可以被脚本反复读取、校验、补齐
 - 缺字段时应阻塞到相应阶段，而不是尝试猜测
+- `clarification.json` / `research.json` / `diagnostic.json` / `approval.json` 是事实载体，`workflow_state.json` 只是 route summary，不反向充当事实源
+- `learn_plan.py` 负责 merge / route，`learn_workflow/state_machine.py` 负责 gate 缺口判定，`learn_workflow/stage_review.py` 负责阶段质量审查
 
 ## 4.2 clarification.json
 
@@ -338,7 +340,7 @@ learn-plan.md
 + recent sessions/*/progress.json
 + 用户 check-in
 -> session plan
--> lesson.md
+-> learn-today-YYYY-MM-DD.md（today 主路径）
 -> questions.json
 -> progress.json
 -> 题集.html + server.py

@@ -1,0 +1,171 @@
+export type QuestionType = 'code' | 'single_choice' | 'multiple_choice' | 'true_false'
+export type QuestionStatus = 'not_started' | 'draft' | 'passed' | 'failed'
+export type ProblemPanelMode = 'description' | 'history' | 'status'
+
+export interface RuntimeTestCase {
+  input?: unknown
+  args?: unknown[]
+  kwargs?: Record<string, unknown>
+  expected?: unknown
+  category?: 'public' | 'hidden'
+  note?: string
+}
+
+export interface RuntimeExample {
+  input?: unknown
+  output?: unknown
+  explanation?: string
+}
+
+export interface RuntimeQuestion {
+  id: string
+  type: QuestionType
+  category?: string
+  title?: string
+  prompt?: string
+  problem_statement?: string
+  input_spec?: string
+  output_spec?: string
+  constraints?: string[] | string
+  examples?: RuntimeExample[]
+  public_tests?: RuntimeTestCase[]
+  function_name?: string
+  function_signature?: string
+  starter_code?: string
+  options?: string[]
+  capability_tags?: string[]
+  difficulty?: string
+}
+
+export interface RuntimeQuestionsPayload {
+  title?: string
+  topic?: string
+  questions: RuntimeQuestion[]
+}
+
+export interface FailedCaseSummary {
+  case?: number
+  category?: string
+  passed?: boolean
+  input?: unknown
+  expected?: unknown
+  expected_repr?: string
+  actual_repr?: string
+  stdout?: string
+  error?: string
+  capability_tags?: string[]
+}
+
+export interface RunCaseResult {
+  input?: unknown
+  input_repr?: string
+  actual?: unknown
+  actual_repr?: string
+  stdout?: string
+  error?: string
+}
+
+export interface SubmitResult {
+  ok?: boolean
+  all_passed?: boolean
+  is_correct?: boolean
+  passed_count?: number
+  total_count?: number
+  passed_public_count?: number
+  total_public_count?: number
+  passed_hidden_count?: number
+  total_hidden_count?: number
+  failed_case_summaries?: FailedCaseSummary[]
+  run_cases?: RunCaseResult[]
+  failure_types?: string[]
+  submitted_at?: string
+  error?: string
+}
+
+export interface QuestionProgressStats {
+  attempts?: number
+  correct_count?: number
+  pass_count?: number
+  last_status?: string | null
+  last_submitted_at?: string | null
+  last_submit_result?: SubmitResult
+  submit_history?: SubmitResult[]
+}
+
+export interface QuestionProgress {
+  stats?: QuestionProgressStats
+  history?: SubmitRecord[]
+  draft?: string
+  selected?: number[]
+}
+
+export interface RuntimeProgress {
+  summary?: {
+    total?: number
+    attempted?: number
+    correct?: number
+  }
+  session?: Record<string, unknown>
+  questions?: Record<string, QuestionProgress>
+  [key: string]: unknown
+}
+
+export interface TestCaseRecord {
+  name: string
+  input: string
+  expected: string
+  actual: string
+  passed: boolean
+  stdout?: string
+  note?: string
+  error?: string
+}
+
+export interface RunCaseRecord {
+  name: string
+  input: string
+  actual: string
+  stdout?: string
+  error?: string
+}
+
+export interface DemoExample {
+  title: string
+  inputCode: string
+  outputCode: string
+  explanation?: string
+}
+
+export interface DemoQuestion {
+  id: string
+  order: number
+  title: string
+  type: QuestionType
+  difficulty: '基础' | '进阶' | '挑战'
+  status: QuestionStatus
+  tags: string[]
+  description: string
+  inputSpec?: string
+  outputSpec?: string
+  constraints?: string[]
+  examples?: DemoExample[]
+  publicTests?: TestCaseRecord[]
+  functionName?: string
+  functionSignature?: string
+  starterCode?: string
+  options?: string[]
+  answerDraft: string
+}
+
+export interface SubmitRecord {
+  id: string
+  questionId: string
+  action: 'run' | 'submit'
+  status: 'passed' | 'failed'
+  message: string
+  createdAt: string
+  testCases: TestCaseRecord[]
+  runCases?: RunCaseRecord[]
+  terminalOutput?: string
+  failure_types?: string[]
+}
