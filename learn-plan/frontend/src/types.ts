@@ -125,6 +125,7 @@ export interface TestCaseRecord {
 export interface RunCaseRecord {
   name: string
   input: string
+  expected?: string
   actual: string
   stdout?: string
   error?: string

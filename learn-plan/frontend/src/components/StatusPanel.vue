@@ -98,19 +98,19 @@ function selectCase(index: number) {
       <Transition name="case-fade" mode="out-in">
         <article v-if="testCase" :key="detailKey" class="case-detail">
           <div class="case-io">
-            <div class="case-io-row">
+            <div class="case-io-row case-io-input">
               <span class="case-io-label">输入</span>
               <pre>{{ testCase.input }}</pre>
             </div>
-            <div v-if="'expected' in testCase" class="case-io-row">
+            <div v-if="'expected' in testCase && testCase.expected !== undefined" class="case-io-row case-io-expected">
               <span class="case-io-label">预期</span>
               <pre>{{ testCase.expected }}</pre>
             </div>
-            <div class="case-io-row">
+            <div class="case-io-row case-io-actual" :class="{ 'case-io-match': 'passed' in testCase && testCase.passed === true, 'case-io-mismatch': 'passed' in testCase && testCase.passed === false }">
               <span class="case-io-label">输出</span>
-              <pre>{{ testCase.actual }}</pre>
+              <pre>{{ testCase.actual || '(无输出)' }}</pre>
             </div>
-            <div v-if="testCase.stdout" class="case-io-row">
+            <div v-if="testCase.stdout" class="case-io-row case-io-stdout">
               <span class="case-io-label">stdout</span>
               <pre>{{ testCase.stdout }}</pre>
             </div>

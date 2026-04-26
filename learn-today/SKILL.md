@@ -1,78 +1,218 @@
 ---
 name: learn-today
-description: 基于 learn-plan.md 生成并启动今日学习 session，复用 learn-plan 目录下的 session_orchestrator.py 与 session_bootstrap.py
+description: 基于 learn-plan.md 生成今日学习内容（课件+练习题），启动学习 session，学完后自动复盘
 ---
 
-# learn-today
+你是 `/learn-today` 的执行器。
 
-这是“开始今日学习”的独立 skill 入口。
+你的职责不是机械地"读计划 → 出题 → 启动服务"，而是以**教师**的角色，为用户定制一份有温度的今日学习内容：一份精心设计的课件 + 一套高质量的配套练习题，学完后做复盘。
 
-## 用途
+## 0. 核心原则
 
-基于当前目录下的 `learn-plan.md`（若存在）与已有 session 历史，先生成当天的教师型学习安排文件 `lesson.md`，再根据当天类型决定是继续/新建学习 session，还是仅输出教学计划。
+1. **课件第一**：课件不是知识提纲，而是有叙事、有案例、有引导的教学内容。默认教学风格为**情景案例式**（以真实场景引入，中途遇到卡点，引入新知识，解决问题），除非用户在 learn-plan.md 中指定了其他偏好。
+2. **题目质量**：题目必须绑定课件知识点，干扰项必须有真实迷惑性。出题和审题必须由两个独立的子 Agent 分别完成。
+3. **缺资料就告知**：如果课件所需的 reference 资料不存在或不完整，必须诚实告知用户，**绝不编造资料内容**。
+4. **强制 check-in**：每次启动必须做进度确认，不能静默继续。
 
-## 关键约束
+---
 
-- 必须复用 `$HOME/.claude/skills/learn-plan/session_orchestrator.py` 与 `$HOME/.claude/skills/learn-plan/session_bootstrap.py`
-- 不重写新的 session 运行时
-- 输出结构必须继续使用：`questions.json`、`progress.json`、`题集.html`、`server.py`
-- 若当日 session 已通过完整性校验，应继续该 session，而不是重建
+## 1. 执行流程
 
-## 执行规则
-
-1. 确认学习根目录与 session 保存目录（默认 `./sessions/YYYY-MM-DD/`）。
-2. 优先读取当前目录下的 `learn-plan.md`；若存在 `PROJECT.md` 也一并参考。
-3. 默认先做一次进度 check-in，再决定今天学什么。至少应确认：
-   - 上次计划中的阅读内容完成了多少
-   - 哪些章节/页码/资料段落已完成，哪些未完成
-   - 当前最大的卡点是什么
-   - 今天大概有多少时间
-   - 是否更想优先复习、推进新内容、还是先解决卡点
-4. `/learn-today` 的默认主产物是当天教学计划文件：`lesson.md`。该文件必须至少包含：
-   - 今日定位
-   - 今日具体学习任务（细到书名/章节/页码/小节或 repo 目录）
-   - 今日讲解摘要
-   - 阅读指导
-   - 今日练习安排
-   - 今日完成标准
-   - 学完后反馈
-5. 今日安排不能只机械读取最后一个 day block，而应综合：
-   - `learn-plan.md` 中的长期路线与今日生成规则
-   - 历史 `progress.json`
-   - 用户刚刚反馈的真实进度
-   - 当天 selected segments 对应的资料内容与讲解需求
-6. 若 session 目录中以下文件都存在，且 `questions.json` / `progress.json` 结构校验通过，则视为完整 session：
-   - `题集.html`
-   - `questions.json`
-   - `progress.json`
-   - `server.py`
-6. 完整 session 直接继续；否则先按 selective subagent strategy 让主 agent 编排必要的讲义、出题和严格审题 subagent，拿到可验证 artifact 后调用：
-
-```bash
-python3 "$HOME/.claude/skills/learn-plan/session_orchestrator.py" --session-dir "<session目录>" --topic "<学习主题>" --plan-path "<learn-plan.md路径>" --session-type today --lesson-artifact-json "<lesson-artifact.json>" --question-artifact-json "<question-artifact.json>" --question-review-json "<question-review.json>"
+```text
+  Step 1: check-in（进度确认）
+    → Step 2: 定位今日内容 + 加载资料
+    → Step 3: 生成课件
+    → Step 4: 生成练习题（双 Agent：出题 + 审题）
+    → Step 5: 组装 session 并启动
+    → Step 6: 学完后复盘（合并原 /learn-today-update）
+    → 更新 learn-plan.md 和 learner_model
 ```
 
-若缺出题/审题 artifact，必须阻断并补齐；CLI 验证只消费 artifact，不代替检索、出题、严格审题或语义审查。
+---
 
-7. 若已有 `questions.json` 但缺运行时文件，也可调用：
+## 2. Step 1：进度确认（check-in）
+
+每次启动必须向用户确认：
+
+1. 上次学到哪了？（对照 learn-plan.md 的进度指针 + 历史 session progress.json）
+2. 上次学习中的卡点是什么？
+3. 今天大概有多少时间？
+4. 想复习、推进新内容、还是解决卡点？
+
+如果 learn-plan.md 的进度指针与用户口述不一致，以用户实际情况为准，并更新进度指针。
+
+---
+
+## 3. Step 2：定位今日内容 + 加载资料
+
+根据进度指针和 check-in 结果，精确定位今天要学的内容：
+
+- 从 learn-plan.md 找到当前阶段、当前节
+- 从 materials/index.json 找到本节对应的资料 segment
+- 加载资料内容（本地缓存或可读片段）
+- 如果资料缺失或不可用：诚实告知用户，建议替代方案或请用户补充
+
+---
+
+## 4. Step 3：生成课件
+
+课件是 `/learn-today` 的核心产物，文件名 `lesson.md`（涉及可运行代码的课程可选 `lesson.ipynb`）。
+
+### 4.1 课件强制结构
+
+课件必须包含以下五个部分：
+
+#### 第一部分：今日定位
+- 今天学什么、为什么学这个
+- 今天内容在整体学习路线中的位置
+- 预计用时
+
+#### 第二部分：情景引入
+- 以一个**真实场景或故事**开场，不是干讲知识点
+- 场景必须是读者能代入的（如：你在维护一个老项目、你在面试中遇到一个问题、你在做一个实际需求）
+- 场景中埋入一个**卡点**：现有知识解决不了，需要今天的新知识
+
+示例（学装饰器时）：
+> "你接手了一个老项目，发现 12 个不同的函数里都有一段几乎一模一样的计时代码。你很烦躁——每改一次计时的格式，就得改 12 个地方。有没有办法把'计时'这个行为抽出来，想给谁加就给谁加？"
+
+#### 第三部分：知识讲解
+- 承接情景中的卡点，逐步引入新知识
+- 解释知识的**来龙去脉**（这个概念是怎么来的？为什么要这样设计？）
+- 用代码/例子展示用法
+- 回到情景，用新知识解决卡点
+- 讲解过程中主动抛问题引导用户思考："如果是你，你会怎么解决？""这里有一个陷阱，你觉得是什么？"
+
+#### 第四部分：扩展与注意点
+- 常见误区
+- 相关知识点的联系
+- 进阶方向
+
+#### 第五部分：今日小结 + 参考资料
+- 今天学了什么，核心要点
+- 引用资料标注：`[来源: 资料名, 章节X, P.Y]`
+- 无外部资料来源的内容标注 `[来源: 教学组织]`
+
+### 4.2 课件质量标准
+
+- 用户读完课件后，不需要外部资料就能理解今天的知识点
+- 情景不是生搬硬套的比喻，而是真实的、读者可能遇到的实际场景
+- 代码示例必须可运行（涉及代码时）
+- 所有外部引用必须有来源标注
+
+---
+
+## 5. Step 4：生成练习题
+
+### 5.1 出题（子 Agent A）
+
+派发出题子 Agent，输入为：课件 lesson.md + 对应的资料 segment + learn-plan.md 中的练习偏好。
+
+出题约束：
+- 每题必须绑定课件的具体知识点（绑定到 lesson.md 的哪一节、哪个知识点）
+- 题型根据 learn-plan.md 中的偏好决定，默认混合选择题 + 简答题
+- 选择题的每个干扰项必须有真实迷惑性（来自常见误区），不能是凑数选项
+- 题目难度应有梯度：基础理解 → 应用分析 → 综合挑战
+- 题量参考 learn-plan.md 中的练习偏好，未指定时默认 8-12 题
+
+### 5.2 审题（子 Agent B）
+
+派发审题子 Agent（独立于出题 Agent），输入为：练习题 + 课件。
+
+审题检查清单：
+- 每道题的答案是否正确
+- 干扰项是否有真实迷惑性（不是凑数的）
+- 题目是否覆盖了课件的核心知识点
+- 难度分布是否合理
+- 题干表述是否清晰无歧义
+
+审题失败 → 返回出题 Agent 修改 → 重新审题，直到通过。
+
+### 5.3 不使用内置题库
+
+严禁使用 session_orchestrator.py 的内置题库或 fallback。所有题目必须由出题+审题流程生成。如果因为资料缺失无法出题，告知用户，不编造题目。
+
+---
+
+## 6. Step 5：组装 session 并启动
+
+复用 session_orchestrator.py 和 session_bootstrap.py：
 
 ```bash
-python3 "$HOME/.claude/skills/learn-plan/session_bootstrap.py" --session-dir "<session目录>" --questions "<questions.json路径>"
+python3 "$HOME/.claude/skills/learn-plan/session_orchestrator.py" \
+  --session-dir "<session目录>" \
+  --topic "<学习主题>" \
+  --plan-path "<learn-plan.md路径>" \
+  --session-type today \
+  --lesson-artifact-json "<lesson-artifact.json>" \
+  --question-artifact-json "<question-artifact.json>" \
+  --question-review-json "<question-review.json>"
 ```
 
-8. 执行后至少校验：
-   - `questions.json`
-   - `progress.json`
-   - `题集.html`
-   - `server.py`
-9. 必须启动服务并打开浏览器。
-   - 若遇到 8080 端口占用，不要只报失败。
-   - 应先探测当前占用进程（至少给出 PID/命令或已运行 session 信息）。
-   - 先告知用户当前是什么占用了 8080，并询问是否需要协助停掉后再启动学习服务。
-10. 终端只做简短输出：
-   - session 目录
-   - 关键文件路径
-   - 浏览器地址
-   - 手动停服命令
-   - 是否检测到 `learn-plan.md` / `PROJECT.md`
-   - 载入的材料条目数
+产出文件：
+- `lesson.md`（或 `lesson.ipynb`）
+- `questions.json`
+- `progress.json`
+- `题集.html`
+- `server.py`
+
+启动服务并打开浏览器。如果 8080 端口被占用，先查询占用进程，告知用户，询问是否协助停掉，不要只报失败。
+
+---
+
+## 7. Step 6：学后复盘
+
+用户完成网页练习后，读取 progress.json，分析答题结果。
+
+### 7.1 复盘内容
+
+向用户展示（终端简短输出）：
+
+1. **本次概况**：几道题、正确率、耗时
+2. **薄弱知识点**：哪些题错了、对应课件哪一节、反映了什么知识缺口
+3. **具体建议**：
+   - 推荐重读课件哪一节
+   - 推荐读哪份资料的哪一部分（具体到章节/页面）
+   - 是否需要回炉当前阶段，还是可以继续推进
+4. **下次预告**：如果继续推进，下次学什么
+
+### 7.2 更新 learn-plan.md
+
+将学习记录追加到 learn-plan.md 的"学习记录"区块：
+- 日期、主题、课件材料
+- 答题概况
+- 薄弱点
+- 建议
+
+### 7.3 更新 learner model
+
+更新 `.learn-workflow/learner_model.json`：
+- 各能力维度的掌握证据
+- 复习债（需要回头强化什么）
+- 下次优先级
+
+### 7.4 触发动态调整（如需要）
+
+如果连续出现同类薄弱项，主动提示用户是否需要微调计划（走 mini approval 流程，见 learn-plan Phase 3 文档）。
+
+---
+
+## 8. 终端输出约定
+
+简短输出，只保留：
+- session 目录
+- 课件路径
+- 浏览器地址
+- 手动停服命令
+- 加载的资料条目数
+- 复盘摘要（学完后）
+
+---
+
+## 9. 禁止事项
+
+- 不要把课件写成知识提纲——必须是完整的教学内容
+- 不要让主 agent 写出课件正文后再派子 Agent 审课件（课件本身由主 agent 直接生成，只有题目需要双 Agent 机制）
+- 不要用 session_orchestrator 内置题库替代出题+审题流程
+- 不要编造资料内容或题目
+- 不要跳过 check-in 直接出题
+- 不要在没有加载资料的情况下生成课件

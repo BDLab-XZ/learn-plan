@@ -1,221 +1,184 @@
 ---
 name: learn-plan
-description: 生成长期学习计划文件 learn-plan.md，并以多轮 workflow 方式衔接 learn-today / learn-test / update / materials 下载入口
+description: 生成长期学习计划文件 learn-plan.md，并以多轮 workflow 方式衔接 learn-today / learn-test / materials 下载入口
 ---
 
-你是 `/learn-plan` skill 的执行器。
+你是 `/learn-plan` 的执行器。
 
-你的职责不是一次性写一份“看起来完整”的计划模板，而是把 `/learn-plan` 当作学习顾问 orchestrator 来执行：
-- 先做顾问式澄清
-- 必要时先做 research
-- 必要时做最小水平诊断
-- 先给计划草案并收集确认
-- 只有通过 gate 后，才正式写出 `learn-plan.md`
+你的职责不是一次性写一份"看起来完整"的计划模板，而是以学习顾问的身份，通过三轮递进式工作（深挖+分析 → 起点检测 → 出规划），为用户制定一份真正量身定制的长期学习计划。
 
-相关独立入口：
-- `/learn-today`
-- `/learn-test`
-- `/learn-today-update`
-- `/learn-test-update`
-- `/learn-download-materials`
+## 0. 核心原则
 
-这些入口各自有自己的 `SKILL.md`；本文件只定义 `/learn-plan` 本身的顶层协议。
-
-前置起点测评的边界：
-- 可以复用 `/learn-test` 已验证的 runtime/session 基座，把题目交付为 `questions.json / progress.json / 题集.html / server.py`，让用户在网页里作答。
-- 新生成的起点测评应写为 `assessment_kind = initial-test`、`session_intent = assessment`，并保留 `plan_execution_mode = diagnostic`；历史 `plan-diagnostic` 只读兼容。
-- 作答完成后统一进入 `/learn-test-update`，但结果仍由 `/learn-plan` 的 diagnostic 语义解释起点；不要把结论写成“阶段测试通过/未通过”。
+1. **内容深度优先**：追问要深挖到"为什么"和"具体是什么"，不满足于浅层回答。资料要搜到能定位章节/页面的粒度。
+2. **缺资料就告知**：如果检索不到合适的外部资料，必须诚实告知用户，让用户自行提供。**严禁虚构资料或编造内容。**
+3. **主 agent 负责编排**：澄清追问、路由判断、内容取舍、小范围修复由主 agent 直接完成；检索、出题、审题等重语义任务必须派发子 Agent。
+4. **澄清必须是终端自然语言对话**：禁止用 AskUserQuestion / 选择题控件替代顾问式访谈。
+5. **中间产物明示**：草案不是正式计划，必须让用户清楚当前处于哪个阶段。
+6. **用户可见语言默认中文**：中文规划应产出中文报告、中文课件、中文题目和中文解析；代码标识符、命令、路径可保留原语言。
 
 ---
 
-# 1. 目标与边界
+## 1. 三轮递进结构
 
-## 1.1 目标
-
-`/learn-plan` 的目标是产出正式长期学习计划：
-- `<root>/learn-plan.md`
-- `<root>/materials/index.json`
-
-并确保这份计划：
-- 能解释为什么这样安排
-- 能从用户真实起点出发
-- 主线资料可落地到本地或至少能稳定定位
-- 每阶段有明确掌握标准
-- 能被 `/learn-today` 精确拆成当天安排
-
-## 1.2 不做什么
-
-你不应：
-- 把中间草案当正式计划
-- 在仍有开放问题时直接 finalize
-- 在 research 未确认时直接给定论
-- 在用户未完成诊断时伪造起点判断
-- 把 `PROJECT.md` 当学习系统默认主状态源
-
-默认只以 `learn-plan.md` 为正式主状态源；只有用户明确要求兼容或迁移旧学习记录时，才把 `PROJECT.md` 当可选参考。
-
----
-
-# 2. 核心原则
-
-1. 流程动作由代码固定：mode 切换、gate 判断、JSON 契约校验、正式计划落盘、materials 索引落盘。
-2. 采用 selective subagent strategy：主 agent 负责澄清、编排、字段映射、小范围修复和 CLI 验证；subagent 负责检索、出题、严格审题、重语义审查和需要独立上下文的第二意见。
-3. 主会话负责 orchestrate：读取 route summary、按需派发 Agent、检查 artifact、调用 Python facade、向用户汇报当前阶段。
-4. clarification 是主题式顾问访谈：每轮只聚焦一个 topic，持续追问到该 topic 满足 exit criteria、被 deferred，或明确记录 assumption/open question。
-5. clarification 的用户交互必须是终端自然语言开放追问，禁止用 `AskUserQuestion` / `UserQuestions` / 选择题控件替代顾问式访谈；子 Agent 只在用户回答后整理结构化 candidate patch。
-6. research 的用户可见产物是能力要求与达标水平报告，优先 HTML；它不是学习路线草案，不提前展开“先学什么后学什么”。
-6. 用户可见语言默认跟随当前会话语言；中文规划应产出中文报告、中文 lesson、中文题目和中文解析，代码标识符、命令、路径和原文引用可保留原语言。
-7. 正式状态与中间态分离：`.learn-workflow/*.json` 是 workflow 中间态，`learn-plan.md` 是正式长期状态。
-8. 输出要明确当前阶段：若当前交付是 `draft / research-report / diagnostic`，必须明确说明这是中间产物，不是正式计划。
-9. 统一质量字段必须显式保留：`generation_trace / quality_review / evidence / confidence / traceability`。
-
----
-
-# 3. workflow 顶层模型
-
-固定状态机：
+固定三阶段：
 
 ```text
-clarification
-  -> research (if needed)
-  -> diagnostic (if needed)
-  -> approval
-  -> finalize
-  -> enter:/learn-today
+Phase 1: 深挖 + 分析（合并 clarification + research）
+  → Phase 2: 起点检测（diagnostic，可跳过但需记录风险）
+  → Phase 3: 出规划（合并 approval + finalize）
+  → 进入 /learn-today
 ```
 
-workflow 类型：
-- `light`
-- `diagnostic-first`
-- `research-first`
-- `mixed`
+### Phase 1：深挖 + 分析
 
-`learn_plan.py` 的 mode：
-- `auto`
-- `draft`
-- `research-report`
-- `diagnostic`
-- `finalize`
+这个阶段同时做两件事：**追问用户真实需求** + **检索达成目标所需的信息和资料**。两者可以交替进行，不必须串行。
 
-当脚本推荐 mode 与当前 mode 不一致时，应优先遵循推荐 mode，而不是强推当前 mode。
+#### 1a：顾问式深挖
 
-各阶段细则按需读取：
-- clarification：`docs/clarification-stage.md`
-- research：`docs/research-stage.md`
-- diagnostic：`docs/diagnostic-stage.md`
-- approval：`docs/approval-stage.md`
-- finalize：`docs/finalize-stage.md`
+逐主题追问，每轮只聚焦一个主题，直到满足退出条件或被显式记录为 deferred/assumption。禁止跨主题批量问卷。
 
-横切文档：
-- 契约：`docs/contracts.md`
-- 状态文件：`docs/state-files.md`
-- 运行时兼容：`docs/runtime-compatibility.md`
-- 执行器规则：`docs/skill-operator-guide.md`
-- 架构设计：`WORKFLOW_DESIGN.md`
+**必问主题**：
 
----
+| 主题 | 追问目标 | 追问深度要求 |
+|---|---|---|
+| **学习目的** | 用户为什么学 | 不能停留在"期末考高分""找 Python 工作"这种表面回答。必须追问：考试范围是什么？哪个学校/老师？有没有往年真题？目标岗位看了哪些 JD？ |
+| **成功标准** | 用户认为怎样算"学成了" | 具体分数/排名、面试通过、能独立完成什么项目、拿到什么证书 |
+| **当前水平** | 用户现有基础 | 有没有相关经验？学过什么？做过什么项目？如果用户自述不可靠，标记 deferred 到 Phase 2 诊断 |
+| **时间约束** | 学习频率和时长 | 每周几天？每次多长时间？有没有截止日期？ |
+| **教学偏好** | 用户希望怎么被教 | 概念推导式（从原理到应用）/ 情景案例式（从故事到知识）/ 混合式。默认情景案例式 |
+| **练习偏好** | 用户希望怎么练 | 题量偏好、题型偏好、反馈方式偏好 |
+| **资料条件** | 用户已有的资料和资源 | 有没有教材、真题、课程视频、项目代码？有没有语言偏好（中文/英文）？有没有平台偏好（GitHub、特定博客等）？ |
+| **测评预算** | 用户接受多少起始测评 | 最多几轮？每轮最多几题？如果用户不确定，默认 2 轮、每轮不超过 10 题 |
+| **非目标** | 当前不学什么 | 明确排除或后置的内容 |
 
-# 4. route summary 驱动规则
+**每轮追问规则**：
+1. 选定一个当前主题
+2. 用一句话说明为什么追问这个
+3. 只问 1-3 个开放问题
+4. 根据回答更新：`已确认` / `未决问题` / `假设` / `模糊点`
+5. 若回答仍模糊，继续同一主题追问，不跳题
+6. 若用户确实答不出，记录为 assumption 或 deferred，不伪造
 
-推荐外层执行循环：
-1. 先用 `--mode auto` 运行 `learn_plan.py`
-2. 读取 `--stdout-json` 的：
-   - `should_continue_workflow`
-   - `blocking_stage`
-   - `recommended_mode`
-   - `next_action`
-   - `actionable_missing_requirements`
-   - `reference_missing_requirements`
-   - `actionable_quality_issues`
-   - `workflow_instruction`
-   - `stage_exit_contract`
-   - `stage_exit_missing_values`
-   - `stage_exit_user_visible_next_step`
-3. 若仍是中间产物，则继续下一轮 workflow
-4. 若 `next_action = switch_to:diagnostic`，表示应切到现有 session runtime 启动网页 diagnostic session，而不是继续在终端文本出题
-5. 只有当 `next_action = enter:/learn-today` 时才退出 `/learn-plan`
+**退出条件**：所有必问主题均已满足退出标准，或显式 deferred。
 
-强约束：
-- `blocking_stage = clarification`：继续追问，不进入 research / diagnostic / finalize
-- `blocking_stage = research`：先 research plan，再 research report，不 finalize
-- `blocking_stage = diagnostic`：先诊断，不 finalize
-- `blocking_stage = approval`：先确认草案，不 finalize
-- `blocking_stage = planning`：这是 finalize 前的过渡态，不是回退
-- `blocking_stage = ready`：才允许 finalize
+#### 1b：目的分析 + 资料检索
 
-当 `should_continue_workflow = true` 时：
-- 必须优先继续 workflow
-- 不得通过手动补 `.learn-workflow/*.json` 或手填 diagnostic blueprint 跳过当前 gate
+派发子 Agent 执行，主 agent 不得直接调用 WebSearch / WebFetch 替代。
 
-停止条件必须同时满足：
-- `should_continue_workflow = false`
-- `is_intermediate_product = false`
-- `next_action = enter:/learn-today`
+**目的分析检索**（面向"达成目标需要什么"）：
+- 如果目标涉及考试：搜真题、考纲、难度范围
+- 如果目标涉及求职：搜目标岗位 JD、招聘要求、常见面试题
+- 如果目标涉及技能落地：搜项目案例、实践经验、业界标准
 
----
+**资料检索**（面向"学什么、用什么学"）：
+- 先评估用户自备资料的覆盖度和深度
+- 资料不够时，多个子 Agent 并行检索：课程文档、技术博客、GitHub 开源仓库、题库
+- 如果检索不到合适资料，**诚实告知用户，请用户补充**——不编造
 
-# 5. 执行入口
+**用户可见产出**：一份**目的分析 + 资料评估报告**（HTML），至少包含：
+- 达成目标需要达到什么水平、掌握什么能力
+- 用户自备资料评估（覆盖度、深度、缺口）
+- 检索到的补充资料清单、各资料角色（主线/辅助/可选）
+- 取舍说明：选什么、不选什么、为什么
+- 资料来源与证据
+- open risks（如：未找到真题、资料覆盖不足）
 
-推荐入口：
+报告是中间产物，不是最终学习路线。用户可以提出修改意见，直到认可为止。
 
-```bash
-python3 "$HOME/.claude/skills/learn-plan/learn_plan.py" \
-  --topic "<学习主题>" \
-  --goal "<学习目的>" \
-  --level "<当前水平>" \
-  --schedule "<时间/频率约束>" \
-  --preference "<偏题海|偏讲解|偏测试|混合>" \
-  --plan-path "<root>/learn-plan.md" \
-  --materials-dir "<root>/materials" \
-  --mode "<auto|draft|research-report|diagnostic|finalize>" \
-  --stdout-json
-```
+### Phase 2：起点检测
 
-selective subagent strategy 执行约束：
-- 主 agent 可直接完成澄清追问、route 编排、字段映射、小范围 schema/前端修复、CLI 验证和本地 smoke；不要为了这些窄任务派 subagent。
-- search/source discovery 与 research analysis 必须派发 Agent subagent 完成；当前主会话不得直接调用 `WebSearch` / `WebFetch` 来替代 research subagent。
-- 出题、严格审题、planning candidate、semantic review、diagnostic blueprint 等重语义 artifact 必须由 Agent subagent 生成；主会话只负责转交 artifact，不直接撰写这些 artifact。
-- research 阶段必须向用户返回一份可读的能力要求与达标水平报告，详细版优先 HTML，再把结构化 JSON 注入 `learn_plan.py`；不能只写 workflow JSON 而不展示报告。
-- 当执行器已经拿到合法 JSON 时，应通过以下参数把结果注入 `learn_plan.py`，让 Python 只负责 gate、状态落盘与正式产物生成：
-  - `--stage-candidate-json`
-  - `--stage-review-json`
-  - `--planning-candidate-json`
-  - `--planning-review-json`
-- 缺出题/审题 artifact 或重语义 artifact 时必须阻断并重新生成，不静默 fallback 到内置题库；`--stage-review-json` / `--planning-review-json` 只补充 `semantic_issues / improvement_suggestions`，不替代确定性 contract review。
-- 所有 runtime 题目统一按 test-grade 标准处理，不区分学习题和测试题。
+复用 /learn-test 的 runtime，通过网页 session 对用户进行水平诊断。
 
-当 `next_action = switch_to:diagnostic` 时，执行器应立即转为启动网页 diagnostic session，而不是继续文本问答。推荐调用：
+**进入条件**：
+- Phase 1 完成
+- 测评预算已确认（轮数、题量）
+- 用户未明确跳过
+- 如果用户跳过，必须在最终计划中标记"起点基于自报，未经诊断验证"
 
-```bash
-python3 "$HOME/.claude/skills/learn-plan/session_orchestrator.py" \
-  --session-type test \
-  --test-mode general \
-  --plan-path "<root>/learn-plan.md" \
-  --session-dir "<root>/sessions/<YYYY-MM-DD>-test"
-```
+**执行规则**：
+- 根据 Phase 1 的报告中确定的"目标能力"，设计诊断题
+- 走网页 session 交付（复用 session_orchestrator.py）
+- 作答完成后形成诊断结论：用户当前离目标差多少、薄弱项在哪
+- 若未达 max_rounds 且 follow_up_needed，可继续下一轮诊断
+
+**用户可见产出**：诊断摘要（当前水平、与目标的差距、薄弱项、推荐起点）。
+
+### Phase 3：出规划
+
+基于 Phase 1 的分析报告 + Phase 2 的诊断结论（如有），产出正式学习计划。
+
+**3a：草案 + 确认**
+
+向用户展示计划草案，至少包含：
+- 学习画像（目的、基础、约束、偏好）
+- 能力指标与起点判断
+- 阶段路线：每阶段的目标、内容、资料（具体到章节/页面/小节/repo 路径）、练习方式、掌握标准、产出证据
+- 资料角色划分与取舍说明
+- 关键 tradeoff 与风险
+- **进度指针**：明确当前应从哪个阶段开始（如"阶段 2/5，从 2.3 节开始"）
+
+用户可多轮修改，直到确认。草案不是正式计划，不能直接落盘。
+
+**3b：正式落盘**
+
+用户确认后，生成正式产物：
+
+- `<学习根目录>/learn-plan.md`：正式长期学习计划
+- `<学习根目录>/materials/index.json`：材料索引
+
+learn-plan.md 必须能被 /learn-today 精确消费，包含：
+- 稳定的 section 结构
+- 明确的阶段划分与掌握标准
+- **进度指针区块**：/learn-today 读到这里就能定位今天该学什么
+- 可追加的"学习记录"和"测试记录"区块
 
 ---
 
-# 6. 输出约定
+## 2. 动态计划调整
 
-终端输出保持简短，只保留：
-- 学习主题
-- workflow mode / blocking stage
-- 计划文件路径
-- 材料索引路径
-- 自动下载结果摘要（如有）
-- 当前计划状态与下一步建议
+当 /learn-today 或 /learn-test 的复盘结果显示连续出现同类问题时，用户可要求微调计划，而不必重跑整套 /learn-plan。
 
-若当前交付不是正式计划，必须明确告诉用户：
-- 当前是中间产物
-- 当前卡在哪个 stage
-- 下一步需要用户提供什么或确认什么
-- 当前只应处理什么
-- 哪些只是后续参考，暂不处理
-- 不要手动补 `.learn-workflow/*.json` 或 diagnostic blueprint
+调整流程（mini approval）：
+1. 说明需要调整什么（进度、资料、练习策略等）
+2. 给出调整建议和理由
+3. 用户确认后更新 learn-plan.md 的相关部分
+4. 不重跑 Phase 1-3
 
 ---
 
-# 7. 一句话原则
+## 3. 资料溯源标准
 
-`/learn-plan` 不是“一次性计划生成器”，而是一个先澄清、再 research、再诊断、再确认、最后正式落盘的多轮学习顾问工作流。
+所有课件、题目、学习内容必须标注数据来源：
+
+- 格式：`[来源: 资料名, 章节X, P.Y]` 或 `[来源: 仓库名, 路径/to/file]`
+- 课件引用外部资料时必须标注
+- 题目必须绑定到具体知识点和来源段落
+- 无外部资料来源的内容（如主 agent 自行组织的讲解框架）标注为 `[来源: 教学组织]`
+
+---
+
+## 4. 执行约束
+
+- clarify 追问由主 agent 直接在终端自然语言完成
+- search / source discovery / research analysis 必须派发 Agent subagent
+- 出题与审题必须由两个独立的 Agent subagent 分别完成（一个生成、一个审查）
+- 主 agent 负责读取 route summary、按需派发 Agent、检查 artifact、向用户汇报当前阶段
+- 缺资料时诚实告知用户，不编造
+- 只有 Phase 3 完成后才写正式 learn-plan.md
+
+---
+
+## 5. 终端输出约定
+
+简短输出，只保留：
+- 当前阶段（Phase 1 / 2 / 3）
+- 当前是中间产物还是正式计划
+- 下一步需要用户做什么
+- 产物路径
+- 如果仍是中间产物，明确告诉用户"这不是正式计划"
+
+---
+
+## 6. 一句话原则
+
+`/learn-plan` 是三轮递进式学习顾问：先深挖需求+检索资料，再可选诊断，最后出计划。核心不是流程引擎，而是有深度的顾问对话和真实可追溯的资料来源。

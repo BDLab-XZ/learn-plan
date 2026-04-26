@@ -117,20 +117,25 @@ function buildPassedCases(result: SubmitResult): TestCaseRecord[] {
   }))
 }
 
-function mapRunCases(result: SubmitResult): RunCaseRecord[] {
-  return (result.run_cases || []).map((item, index) => ({
-    name: `运行样例 ${index + 1}`,
-    input: stringifyValue(item.input_repr || item.input),
-    actual: stringifyValue(item.actual_repr || item.actual),
-    error: item.error,
-    stdout: stringifyValue(item.stdout),
-  }))
+function mapRunCases(result: SubmitResult, publicTests?: RuntimeTestCase[]): RunCaseRecord[] {
+  return (result.run_cases || []).map((item, index) => {
+    const expected = publicTests?.[index]?.expected
+    return {
+      name: `运行样例 ${index + 1}`,
+      input: stringifyValue(item.input_repr || item.input),
+      expected: expected !== undefined ? stringifyValue(expected) : undefined,
+      actual: stringifyValue(item.actual_repr || item.actual),
+      error: item.error,
+      stdout: stringifyValue(item.stdout),
+    }
+  })
 }
 
 function buildTerminalOutput(record: Pick<SubmitRecord, 'action' | 'message' | 'testCases' | 'runCases' | 'failure_types'>): string {
   if (record.runCases?.length) {
     return record.runCases.map((testCase) => [
       `测试输入：${testCase.input}`,
+      testCase.expected ? `预期输出：${testCase.expected}` : '',
       `实际输出：${testCase.actual || '(无输出)'}`,
       testCase.error ? `错误：${testCase.error}` : '',
     ].filter(Boolean).join('\n')).join('\n\n')
@@ -147,7 +152,7 @@ function buildTerminalOutput(record: Pick<SubmitRecord, 'action' | 'message' | '
   return record.action === 'run' ? '运行完成，但没有可展示的样例输出。' : '本次提交没有失败样例输出。'
 }
 
-function resultToRecord(questionId: string, action: SubmitRecord['action'], result: SubmitResult): SubmitRecord {
+function resultToRecord(questionId: string, action: SubmitRecord['action'], result: SubmitResult, publicTests?: RuntimeTestCase[]): SubmitRecord {
   const failed = (result.failed_case_summaries || []).map(mapFailedCase)
   const passed = buildPassedCases(result)
   const ok = result.all_passed ?? result.is_correct ?? result.ok ?? !result.error
@@ -165,7 +170,7 @@ function resultToRecord(questionId: string, action: SubmitRecord['action'], resu
     message: result.error || (detail ? `${ok ? '通过' : '未通过'}：${detail}` : ok ? '运行完成。' : '答案未通过。'),
     createdAt: formatTime(result.submitted_at),
     testCases: [...passed, ...failed],
-    runCases: mapRunCases(result),
+    runCases: mapRunCases(result, publicTests),
     failure_types: result.failure_types,
   }
   return {
@@ -416,7 +421,7 @@ async function runCurrentQuestion() {
         }),
       })
       : { ok: true, is_correct: selectedIndices(question).length > 0 }
-    applyRecord(resultToRecord(question.id, 'run', result))
+    applyRecord(resultToRecord(question.id, 'run', result, rawQuestion.public_tests))
     await persistProgress()
   } catch (error) {
     applyRecord(resultToRecord(question.id, 'run', { ok: false, error: error instanceof Error ? error.message : String(error) }))

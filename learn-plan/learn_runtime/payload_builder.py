@@ -18,7 +18,6 @@ from learn_runtime.question_generation import (
     build_content_driven_questions,
     build_question_review,
     infer_question_role_from_primary_category,
-    merge_question_pools,
     merge_question_review_results,
     normalize_generated_runtime_questions,
     normalize_question_repair_plan,
@@ -327,21 +326,16 @@ def build_questions_payload(args: argparse.Namespace, topic: str, plan_text: str
             "generated_code_count": 0,
             "generated_written_count": 0,
         }
-        blueprint_ready = bool(diagnostic_blueprint.get("blueprint_ready"))
-        if not blueprint_ready:
-            missing_fields = normalize_string_list(diagnostic_blueprint.get("missing_fields") or ["diagnostic_blueprint"])
-            raise ValueError(f"initial diagnostic 缺少 blueprint，无法启动 session: {', '.join(missing_fields)}")
-        plan_source["question_generation_mode"] = "diagnostic-session-derived-from-blueprint"
-        plan_source["question_source"] = "diagnostic-session-derived"
-        plan_source["diagnostic_generation_mode"] = "diagnostic-session-derived-from-blueprint"
-        if diagnostic_blueprint.get("candidate_version"):
-            plan_source["diagnostic_blueprint_version"] = diagnostic_blueprint.get("candidate_version")
-        lesson_grounding_context["question_source"] = plan_source.get("question_source")
-        lesson_grounding_context["diagnostic_generation_mode"] = plan_source.get("diagnostic_generation_mode")
+        # 新设计：不再要求 diagnostic_blueprint。题目由外部 Agent 注入。
+        plan_source["question_generation_mode"] = "agent-injected"
+        plan_source["question_source"] = "agent-injected"
+        plan_source["diagnostic_generation_mode"] = "agent-injected"
+        lesson_grounding_context["question_source"] = "agent-injected"
+        lesson_grounding_context["diagnostic_generation_mode"] = "agent-injected"
         lesson_grounding_context["target_capability_ids"] = diagnostic_blueprint_tags or normalize_string_list(plan_source.get("target_capability_ids") or [])
         lesson_grounding_context["semantic_profile"] = "initial-test"
-        daily_lesson_plan["question_source"] = plan_source.get("question_source")
-        daily_lesson_plan["diagnostic_generation_mode"] = plan_source.get("diagnostic_generation_mode")
+        daily_lesson_plan["question_source"] = "agent-injected"
+        daily_lesson_plan["diagnostic_generation_mode"] = "agent-injected"
         daily_lesson_plan["target_capability_ids"] = diagnostic_blueprint_tags or normalize_string_list(plan_source.get("target_capability_ids") or [])
         daily_lesson_plan["semantic_profile"] = "initial-test"
         questions_per_round_limit = 0
@@ -350,57 +344,20 @@ def build_questions_payload(args: argparse.Namespace, topic: str, plan_text: str
         except (TypeError, ValueError):
             questions_per_round_limit = 0
         questions_per_round_limit = max(1, questions_per_round_limit) if questions_per_round_limit else 0
-        if domain == "python":
-            seed_payload = build_python_question_generation_seed(bank_concept, bank_code, plan_source)
-            python_selection_context = seed_payload.get("selection_context") if isinstance(seed_payload.get("selection_context"), dict) else {}
-            if not normalize_string_list(python_selection_context.get("target_clusters") or []):
-                raise ValueError("initial diagnostic 缺少可解析的 Python target clusters，已阻止默认题库 fallback")
-        else:
-            seed_payload = {
-                "seed_questions": merge_question_pools([bank_concept, bank_code], limit=questions_per_round_limit or 8),
-                "question_mix": {
-                    "concept": min(6, len(bank_concept)),
-                    "code": min(2, len(bank_code)) if domain_supports_code_questions(domain) else 0,
-                    "open": 0,
-                },
-                "seed_constraints": {},
-                "selection_context": {"selection_policy": "domain-bank-seed"},
-            }
-            python_selection_context = seed_payload["selection_context"]
-        runtime_question_mix = dict(seed_payload.get("question_mix") or {})
-        minimum_pass_shape = (seed_payload.get("seed_constraints") or {}).get("minimum_pass_shape") if isinstance((seed_payload.get("seed_constraints") or {}).get("minimum_pass_shape"), dict) else {}
-        required_code_question_count = int(minimum_pass_shape.get("required_code_question_count") or (seed_payload.get("seed_constraints") or {}).get("required_code_question_count") or 0)
-        required_open_question_count = int(minimum_pass_shape.get("required_open_question_count") or (seed_payload.get("seed_constraints") or {}).get("required_open_question_count") or 0)
-        runtime_question_mix = {
-            "concept": max(1, int(runtime_question_mix.get("concept") or 0) or 1),
-            "code": max(required_code_question_count, int(runtime_question_mix.get("code") or 0)),
-            "open": max(required_open_question_count, int(runtime_question_mix.get("open") or 0)),
-        }
-        if questions_per_round_limit and sum(int(runtime_question_mix.get(name) or 0) for name in ("concept", "code", "open")) < questions_per_round_limit:
-            runtime_question_mix["concept"] += questions_per_round_limit - sum(int(runtime_question_mix.get(name) or 0) for name in ("concept", "code", "open"))
-        diagnostic_min_total = max(4, runtime_question_mix["concept"] + runtime_question_mix["code"] + runtime_question_mix["open"])
-        if questions_per_round_limit and questions_per_round_limit < diagnostic_min_total:
-            questions_per_round_limit = diagnostic_min_total
-            plan_source["questions_per_round"] = questions_per_round_limit
-        if questions_per_round_limit:
-            open_count = min(int(runtime_question_mix.get("open") or 0), questions_per_round_limit)
-            remaining_budget = max(0, questions_per_round_limit - open_count)
-            code_count = min(int(runtime_question_mix.get("code") or 0), remaining_budget)
-            concept_count = min(int(runtime_question_mix.get("concept") or 0), max(0, remaining_budget - code_count))
-            if concept_count + code_count + open_count < questions_per_round_limit:
-                concept_count += max(0, questions_per_round_limit - (concept_count + code_count + open_count))
-            runtime_question_mix = {"concept": concept_count, "code": code_count, "open": open_count}
+        # 简单：题量和 mix 由注入的 question_artifact 决定，不定死 domain bank 逻辑
+        python_selection_context: dict[str, Any] = {"selection_policy": "agent-injected"}
+        runtime_question_mix = {"concept": questions_per_round_limit or 8, "code": 0, "open": 0}
         questions = normalize_generated_runtime_questions(
             question_artifact,
             domain,
-            limit=max(1, sum(int(runtime_question_mix.get(name) or 0) for name in ("concept", "code", "open")) or questions_per_round_limit or 8),
-            default_question_source="diagnostic-session-derived",
-            default_source_status="diagnostic-session-derived",
-            default_diagnostic_generation_mode=str(plan_source.get("diagnostic_generation_mode") or daily_lesson_plan.get("diagnostic_generation_mode") or ""),
+            limit=questions_per_round_limit or 8,
+            default_question_source="agent-injected",
+            default_source_status="agent-injected",
+            default_diagnostic_generation_mode="agent-injected",
             default_question_role="project_task",
         )
         question_generation_context = {
-            "mode": "diagnostic-session-derived" if questions else "harness-required",
+            "mode": "agent-injected" if questions else "harness-required",
             "artifact_source": "harness-injected" if isinstance(question_artifact, dict) and question_artifact else "harness-required",
             "status": "ok" if questions else "missing-external-artifact",
             "review_loop_status": "completed" if questions else "missing-external-artifact",
@@ -408,7 +365,7 @@ def build_questions_payload(args: argparse.Namespace, topic: str, plan_text: str
             "seed_fallback_used": False,
         }
         if not questions:
-            raise ValueError("initial diagnostic 缺少 Agent 生成的 question artifact：禁止 fallback 到 seed/domain bank 题库，请先派 subagent 生成 question-artifact-json")
+            raise ValueError("initial diagnostic 缺少 Agent 生成的 question artifact：请先派 subagent 生成 question-artifact-json，严禁 fallback 到内置题库")
         deterministic_question_review = build_question_review(questions, domain, lesson_grounding_context, daily_lesson_plan)
         strict_question_review = normalize_injected_question_review(review_artifact)
         if not strict_question_review.get("valid"):
@@ -420,26 +377,18 @@ def build_questions_payload(args: argparse.Namespace, topic: str, plan_text: str
             strict_question_review,
         )
         plan_source["lesson_path"] = plan_source.get("daily_plan_artifact_path")
-        if diagnostic_blueprint_tags:
-            for item in questions:
-                if not isinstance(item, dict):
-                    continue
-                item["source_status"] = item.get("source_status") or "diagnostic-session-derived"
-                source_trace = item.get("source_trace") if isinstance(item.get("source_trace"), dict) else {}
-                source_trace = dict(source_trace)
-                source_trace.setdefault("question_source", "diagnostic-session-derived")
-                source_trace.setdefault("diagnostic_generation_mode", plan_source.get("diagnostic_generation_mode") or "diagnostic-session-derived-from-blueprint")
-                if plan_source.get("diagnostic_blueprint_version"):
-                    source_trace.setdefault("diagnostic_blueprint_version", plan_source.get("diagnostic_blueprint_version"))
-                source_trace.setdefault("target_capability_ids", diagnostic_blueprint_tags[:6])
-                item["question_role"] = infer_question_role_from_primary_category(str(source_trace.get("primary_category") or ""), default=str(item.get("question_role") or "project_task"))
-                item["diagnostic_generation_mode"] = source_trace.get("diagnostic_generation_mode")
-                item["tags"] = normalize_string_list(list(item.get("tags") or []) + diagnostic_blueprint_tags[:4])
-                item["source_trace"] = source_trace
-                if source_trace.get("target_capability_ids") and not item.get("target_capability_ids"):
-                    item["target_capability_ids"] = normalize_string_list(source_trace.get("target_capability_ids") or [])
-                if source_trace.get("primary_category") and not item.get("primary_category"):
-                    item["primary_category"] = source_trace.get("primary_category")
+        # target capability tags：可选，来自 Phase 1 报告而非强制 blueprint
+        for item in questions:
+            if not isinstance(item, dict):
+                continue
+            item["source_status"] = item.get("source_status") or "agent-injected"
+            source_trace = item.get("source_trace") if isinstance(item.get("source_trace"), dict) else {}
+            source_trace = dict(source_trace)
+            source_trace.setdefault("question_source", "agent-injected")
+            source_trace.setdefault("diagnostic_generation_mode", "agent-injected")
+            item["question_role"] = infer_question_role_from_primary_category(str(source_trace.get("primary_category") or ""), default=str(item.get("question_role") or "project_task"))
+            item["diagnostic_generation_mode"] = "agent-injected"
+            item["source_trace"] = source_trace
         deterministic_question_review = question_generation_context.get("deterministic_question_review") if isinstance(question_generation_context.get("deterministic_question_review"), dict) else {}
         strict_question_review = question_generation_context.get("strict_question_review") if isinstance(question_generation_context.get("strict_question_review"), dict) else {}
         question_review = question_generation_context.get("question_review") if isinstance(question_generation_context.get("question_review"), dict) else {}

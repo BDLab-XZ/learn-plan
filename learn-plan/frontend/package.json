@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "vite build",
+    "build:demo": "vite build --config vite.config.demo.ts && cp ../templates/runtime-dist-demo/demo.html ../templates/runtime-dist-demo/index.html",
     "typecheck": "vue-tsc --noEmit"
   },
   "dependencies": {
