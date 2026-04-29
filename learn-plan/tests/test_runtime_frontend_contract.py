@@ -39,7 +39,7 @@ class RuntimeFrontendContractTest(unittest.TestCase):
         rich_text_source = (SRC_DIR / "renderers" / "richText.ts").read_text(encoding="utf-8")
         tabs_source = (SRC_DIR / "components" / "ProblemInfoTabs.vue").read_text(encoding="utf-8")
 
-        for marker in ("renderRichText", "rich-text-code-block", "rich-text-inline-code", "rich-text-list", "rich-text-formula"):
+        for marker in ("renderRichText", "rich-text-paragraph", "rich-text-code-block", "rich-text-inline-code", "rich-text-list", "rich-text-ordered-list", "rich-text-heading", "rich-text-formula"):
             self.assertIn(marker, rich_text_source)
         self.assertIn("renderRichText", tabs_source)
         self.assertNotIn(".replace(/\\n/g, '<br>')", tabs_source)

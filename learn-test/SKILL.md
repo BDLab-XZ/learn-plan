@@ -52,10 +52,11 @@ description: 基于学习进度和历史生成阶段测试，启动测试 sessio
 
 与 /learn-today 同一标准：
 
-- **出题（子 Agent A）**：每题绑定能力维度/materials segment，干扰项必须有真实迷惑性，难度有梯度
-- **审题（子 Agent B）**：独立审查，检查答案正确性、干扰项质量、覆盖度、表述清晰度
+- **出题（子 Agent A）**：出题前必须先读取 `docs/question-schema.md`，严格按 schema 生成 JSON。每题绑定能力维度/materials segment，干扰项必须有真实迷惑性，难度有梯度
+- **审题（子 Agent B）**：独立审查，检查答案正确性、干扰项质量、覆盖度、表述清晰度；代码题必须检查 `problem_statement` Markdown 排版、`input_spec/output_spec/constraints` 独立非空、constraints 不得分号堆成一行
 - 审题失败 → 修改 → 重审，直到通过
 - 禁止使用内置题库或 fallback
+- 禁止生成 open/written/short_answer 类型题目（会被 runtime 自动拒绝）
 
 ---
 
@@ -68,6 +69,8 @@ python3 "$HOME/.claude/skills/learn-plan/session_orchestrator.py" \
   --plan-path "<learn-plan.md路径>" \
   --session-type test \
   --test-mode "<general|weakness-focused|mixed>" \
+  --lesson-artifact-json "<lesson-artifact.json>" \
+  --lesson-html-json "<lesson-html.json>" \
   --question-artifact-json "<question-artifact.json>" \
   --question-review-json "<question-review.json>"
 ```

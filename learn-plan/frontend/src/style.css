@@ -419,9 +419,18 @@ h1 {
   overflow-wrap: anywhere;
 }
 
+.rich-text-paragraph + .rich-text-paragraph {
+  margin-top: 2px;
+}
+
 .rich-text-list {
   margin: 0;
   padding-left: 20px;
+}
+
+.rich-text-list li + li,
+.rich-text-ordered-list li + li {
+  margin-top: 4px;
 }
 
 .rich-text-code-block {

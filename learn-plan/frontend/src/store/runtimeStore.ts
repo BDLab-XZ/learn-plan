@@ -216,7 +216,7 @@ function mapQuestion(question: RuntimeQuestion, index: number): DemoQuestion {
     difficulty: normalizeDifficulty(question.difficulty),
     status: statusFromProgress(question.id, draft),
     tags: question.capability_tags?.length ? question.capability_tags : [question.category || question.type],
-    description: question.problem_statement || question.prompt || '',
+    description: question.problem_statement || question.question || question.prompt || '',
     inputSpec: question.input_spec || question.function_signature,
     outputSpec: question.output_spec,
     constraints: normalizeConstraints(question.constraints),
@@ -294,6 +294,7 @@ const latestRecordsByQuestion = computed(() => {
 
 function selectQuestion(questionId: string) {
   state.activeQuestionId = questionId
+  state.panelMode = 'description'
 }
 
 function toggleSidebar() {
@@ -414,10 +415,8 @@ async function runCurrentQuestion() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           mode: 'function',
-          question_id: question.id,
           code: question.answerDraft || question.starterCode || '',
           function_name: question.functionName,
-          sample_cases: rawQuestion.public_tests || [],
         }),
       })
       : { ok: true, is_correct: selectedIndices(question).length > 0 }

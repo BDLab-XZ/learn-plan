@@ -23,6 +23,7 @@ export interface RuntimeQuestion {
   category?: string
   title?: string
   prompt?: string
+  question?: string
   problem_statement?: string
   input_spec?: string
   output_spec?: string

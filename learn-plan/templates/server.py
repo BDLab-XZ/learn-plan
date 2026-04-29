@@ -268,6 +268,8 @@ class Handler(BaseHTTPRequestHandler):
                     "url": f"http://localhost:{PORT}",
                 }
             )
+        elif path == "/lesson" or path == "/lesson.html":
+            self.serve_file("lesson.html")
         elif path == "/heatmap":
             self.send_json(build_heatmap_data())
         else:
@@ -424,12 +426,34 @@ class Handler(BaseHTTPRequestHandler):
 
     def _run_function_preview(self, payload, timeout=10):
         cases = payload.get("sample_cases") or payload.get("test_cases") or []
+        user_args = payload.get("args")
+        user_kwargs = payload.get("kwargs")
         if not cases:
+            if user_args is not None or user_kwargs is not None:
+                # 用户指定了输入参数：用用户的参数执行并返回实际输出
+                case = {}
+                if user_args is not None:
+                    case["args"] = user_args if isinstance(user_args, list) else [user_args]
+                if user_kwargs is not None:
+                    case["kwargs"] = user_kwargs
+                runner = self._run_function_case(
+                    code=payload.get("code", ""),
+                    function_name=payload.get("function_name", ""),
+                    case=case,
+                    timeout=timeout,
+                )
+                return {
+                    "returncode": 0 if not runner.get("error") else -1,
+                    "stdout": runner.get("stdout", ""),
+                    "stderr": runner.get("stderr", ""),
+                    "result_repr": runner.get("actual_repr", ""),
+                    "error": runner.get("error", ""),
+                }
             return {
                 "returncode": 0,
                 "stdout": "",
                 "stderr": "",
-                "result_repr": "未提供示例输入，已完成语法检查。",
+                "result_repr": "未提供示例输入。运行模式：语法检查已通过。如需传参调试，请在输入框中填写参数。",
                 "error": "",
             }
         case = cases[0]

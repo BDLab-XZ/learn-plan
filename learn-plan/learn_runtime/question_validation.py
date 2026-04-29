@@ -95,6 +95,41 @@ def question_has_answer_and_explanation(item: dict[str, Any]) -> bool:
     return False
 
 
+
+def _strip_fenced_code(text: str) -> str:
+    return re.sub(r"```.*?```", "", text, flags=re.DOTALL)
+
+
+def _has_readable_markdown_layout(text: str) -> bool:
+    value = str(text or "").strip()
+    if not value:
+        return False
+    meaningful_lines = [line.strip() for line in value.splitlines() if line.strip()]
+    has_block = bool(re.search(r"\n\s*\n", value) or re.search(r"```", value))
+    has_list = bool(re.search(r"^\s*[-*]\s+", value, re.MULTILINE) or re.search(r"^\s*\d+[.)]\s+", value, re.MULTILINE))
+    has_inline = bool(re.search(r"`[^`]+`", value) or re.search(r"\*\*.+?\*\*", value))
+    has_multiline = len(meaningful_lines) >= 2
+    return has_block or has_list or (has_inline and has_multiline)
+
+
+def _has_overlong_plain_line(text: str, *, limit: int = 180) -> bool:
+    plain = _strip_fenced_code(str(text or ""))
+    return any(len(line.strip()) > limit for line in plain.splitlines() if line.strip())
+
+
+def _constraints_are_readable(value: Any) -> bool:
+    if isinstance(value, list):
+        return len([item for item in value if str(item).strip()]) >= 1
+    text = str(value or "").strip()
+    if not text:
+        return False
+    if re.search(r"^\s*[-*]\s+", text, re.MULTILINE) or re.search(r"^\s*\d+[.)]\s+", text, re.MULTILINE):
+        return True
+    if len([line for line in text.splitlines() if line.strip()]) >= 2:
+        return True
+    return text.count("；") + text.count(";") <= 1
+
+
 def question_traceability_status(item: dict[str, Any], marker: str) -> str:
     source_status = str(item.get("source_status") or "").strip()
     if source_status:
@@ -135,6 +170,35 @@ def validate_question_item(item: Any) -> list[str]:
         issues.append(f"{qid}: schema 不合法")
     if not question_has_answer_and_explanation(item):
         issues.append(f"{qid}: 缺少答案或解析/参考解")
+    # 概念题排版校验：question 字段必须有至少一个 markdown 格式元素
+    if str(item.get("category") or "").strip() == "concept":
+        qtext = str(item.get("question") or item.get("prompt") or "")
+        has_markdown = bool(
+            re.search(r"```", qtext) or  # 代码块
+            re.search(r"\*\*.*?\*\*", qtext) or  # 粗体
+            re.search(r"^[-*]\s+", qtext, re.MULTILINE) or  # 无序列表
+            re.search(r"^\d+[.)]\s+", qtext, re.MULTILINE) or  # 有序列表
+            re.search(r"^#{1,3}\s+", qtext, re.MULTILINE) or  # 标题
+            len(qtext.splitlines()) >= 3  # 至少 3 段（含空行分隔）
+        )
+        if not has_markdown:
+            issues.append(f"{qid}: 概念题 question 字段为纯文本一段到底，必须使用 Markdown 排版（粗体/代码块/列表/多段分隔）")
+    # 代码题排版校验：结构化字段不能为空，题干必须可扫读
+    if str(item.get("category") or "").strip() == "code":
+        problem_statement = str(item.get("problem_statement") or "")
+        constraints_value = item.get("constraints")
+        ps_len = len(problem_statement)
+        is_len = len(str(item.get("input_spec") or ""))
+        os_len = len(str(item.get("output_spec") or ""))
+        cs_len = len("\n".join(str(v) for v in constraints_value) if isinstance(constraints_value, list) else str(constraints_value or ""))
+        if not _has_readable_markdown_layout(problem_statement):
+            issues.append(f"{qid}: 代码题 problem_statement 为纯文本一段到底（{ps_len}字符），必须使用 Markdown 排版——用空行、列表、粗体、内联代码或代码块组织题面")
+        if _has_overlong_plain_line(problem_statement):
+            issues.append(f"{qid}: 代码题 problem_statement 存在过长单行，必须把条件/边界拆成多行或列表")
+        if is_len < 10 or os_len < 10 or cs_len < 10:
+            issues.append(f"{qid}: 代码题的 input_spec/output_spec/constraints 不能为空或过短（各≥10字符）。禁止把所有内容只写进 problem_statement，必须拆分到各自独立的结构化字段")
+        if not _constraints_are_readable(constraints_value):
+            issues.append(f"{qid}: 代码题 constraints 必须用数组、Markdown 列表或换行表达多条规则，禁止用分号堆成一行")
     marker = question_source_marker(item)
     if not marker or marker == "missing-source-trace":
         issues.append(f"{qid}: 缺少可追踪来源：需要 source_trace / source_segment_id / material_segment_id / lesson-derived / content-derived / diagnostic capability trace")

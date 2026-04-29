@@ -105,15 +105,23 @@ def language_policy_prompt_block(language_policy: dict[str, Any] | None) -> str:
 
 
 def shared_style_prompt_block(*, audience: str = "学习产物") -> str:
+    narrative_extra = ""
+    if "讲义" in audience or "课件" in audience or "解释" in audience:
+        narrative_extra = (
+            "- 课件采用三段教学框架：Part 1 往期复习、Part 2 本期知识点讲解、Part 3 本期内容回看。\n"
+            "- 往期复习要承接上一期学习结果、错题/薄弱点、已掌握内容与本期入口。\n"
+            "- 本期知识点讲解要围绕真实问题逐步分析，可自由使用段落、列表、表格、代码块、案例、反例和推理步骤。\n"
+            "- 本期内容回看要列出材料来源，尽量精确到材料名、章节、页码、段落、section 或 locator；缺失精确定位时明确说明，不编造。\n"
+            "- 不限制 section 数量或版式；优先让内容好读、好学、可验证，而不是套固定故事模板。\n"
+        )
     return f"""共享风格约束（适用于{audience}）：
 - 内容必须绑定当前 goal、当前阶段、已选材料/证据、当前 blocker 或薄弱点，不能写成放哪都行的通用话术。
-- 要有真实背景：优先解释“为什么现在学它、它在当前任务/阶段里解决什么问题、哪里最容易卡住”。
-- 少废话：不要写“你可以考虑”“下面给出建议”“建议如下”这类提示语或咨询式套话。
+- 要有真实背景：优先解释"为什么现在学它、它在当前任务/阶段里解决什么问题、哪里最容易卡住"。
+- 少废话：不要写"你可以考虑""下面给出建议""建议如下"这类提示语或咨询式套话。
 - 精简但有深度：保留真正帮助理解与执行的信息，省掉空泛铺垫和同义反复。
 - 解释应服务行动：尽量把解释落到可判断的 mastery check、下一步动作或具体取舍上。
-- 若输入证据不足，宁可明确保留 open questions / pending items，也不要脑补细节。"""
-
-
+- 若输入证据不足，宁可明确保留 open questions / pending items，也不要脑补细节。
+{narrative_extra}"""
 def parse_json_from_llm_output(raw_text: str) -> Any | None:
     return core_parse_json_from_llm_output(raw_text)
 
@@ -1132,8 +1140,8 @@ def build_lesson_review(plan: dict[str, Any]) -> dict[str, Any]:
         suggestions.append("为每个重点知识补一条可判断是否掌握的标准。")
 
     if not project_tasks:
-        issues.append("today-lesson.project-driven-explanation-missing")
-        suggestions.append("把讲解改成围绕一个或多个真实任务展开，而不是抽象定义堆砌。")
+        # project_driven_explanation 现在是可选的——叙事内容由 lesson-html.json 承载
+        pass
     else:
         if not any(normalize_prompt_string_list(item.get("knowledge_points"), limit=6) for item in project_tasks):
             warnings.append("today-lesson.project-knowledge-link-weak")
@@ -1142,12 +1150,21 @@ def build_lesson_review(plan: dict[str, Any]) -> dict[str, Any]:
             warnings.append("today-lesson.project-blocker-weak")
             suggestions.append("明确每个任务会卡在哪里，再据此引入知识点。")
 
-    if not normalize_string_list(review_suggestions.get("today_review") or []):
+    today_review_raw = review_suggestions.get("today_review") or []
+    progress_review_raw = review_suggestions.get("progress_review") or []
+    # 兼容两种格式：纯 string 或 {focus, material, locator, ...} object
+    today_review_strs = [r.get("focus") if isinstance(r, dict) else str(r) for r in (today_review_raw if isinstance(today_review_raw, list) else [])]
+    progress_review_strs = [r.get("focus") if isinstance(r, dict) else str(r) for r in (progress_review_raw if isinstance(progress_review_raw, list) else [])]
+    has_locator_detail = any(isinstance(r, dict) and r.get("locator") for r in (today_review_raw if isinstance(today_review_raw, list) else []))
+    if not any(s.strip() for s in today_review_strs):
         issues.append("today-lesson.review-today-missing")
         suggestions.append("建议复习里要包含对今天内容的复盘，而不是只给泛泛提醒。")
-    if execution_mode == "normal" and not normalize_string_list(review_suggestions.get("progress_review") or []):
+    if execution_mode == "normal" and not any(s.strip() for s in progress_review_strs):
         issues.append("today-lesson.review-progress-missing")
         suggestions.append("建议复习要结合当前进度、旧知识债或下一步推进条件。")
+    if today_review_strs and any(s.strip() for s in today_review_strs) and not has_locator_detail:
+        warnings.append("today-lesson.review-locator-weak")
+        suggestions.append("复习建议建议包含具体页码/段落定位，而非仅抽象建议。")
     if not review_targets:
         warnings.append("today-lesson.review-targets-weak")
         suggestions.append("补充 review targets，方便题目和后续 update 与今日讲解对齐。")
@@ -1168,46 +1185,52 @@ def build_lesson_review(plan: dict[str, Any]) -> dict[str, Any]:
     if project_tasks and not any(str(item.get("real_context") or "").strip() for item in project_tasks):
         issues.append("today-lesson.real-context-missing")
         suggestions.append("每个项目任务都要说明真实背景，避免只剩抽象知识点。")
-    case_courseware = plan.get("case_courseware") if isinstance(plan.get("case_courseware"), dict) else build_case_courseware(plan)
-    flashcards = courseware_items(case_courseware.get("knowledge_preview_flashcards"))
-    case_background = case_courseware.get("case_background") if isinstance(case_courseware.get("case_background"), dict) else {}
-    guided_steps = courseware_items(case_courseware.get("guided_story_practice"))
-    review_sources = courseware_items(case_courseware.get("review_sources"))
-    if not flashcards or not case_background or not guided_steps or not review_sources:
-        issues.append("today-lesson.case-courseware-missing")
-        suggestions.append("补齐知识闪卡、案例背景、故事化实践和复习材料来源。")
-    if flashcards and not all(has_substantive_courseware_text(item.get("mastery_check")) for item in flashcards):
-        issues.append("today-lesson.flashcard-mastery-check-missing")
-        suggestions.append("课前知识预告里的每张知识卡都要有可判断的掌握检查。")
-    if case_background and (
-        not has_substantive_courseware_text(case_background.get("situation"), min_chars=10)
-        or not has_substantive_courseware_text(case_background.get("problem_to_solve"), min_chars=6)
-    ):
-        issues.append("today-lesson.case-background-hollow")
-        suggestions.append("案例背景要写清真实情境和要解决的问题，不能只保留空壳字段。")
-    if guided_steps and not all(
-        has_substantive_courseware_text(step.get("scene"))
-        and has_substantive_courseware_text(step.get("challenge"))
-        and has_substantive_courseware_text(step.get("teaching_move"))
-        and has_substantive_courseware_text(step.get("resolution"))
-        for step in guided_steps
-    ):
-        issues.append("today-lesson.guided-practice-hollow")
-        suggestions.append("跟着案例学的每一步都要包含场景、卡点、知识引入和解决方式。")
-    if review_sources and not all(
-        has_substantive_courseware_text(item.get("material_title"), min_chars=2)
-        and has_substantive_courseware_text(item.get("locator"), min_chars=2)
-        and has_substantive_courseware_text(item.get("review_focus"), min_chars=2)
-        for item in review_sources
-    ):
-        issues.append("today-lesson.review-source-incomplete")
-        suggestions.append("回看资料要包含材料名、定位和复习重点。")
-    if (case_courseware.get("exercise_policy") or {}).get("embedded_questions"):
-        issues.append("today-lesson.embedded-practice-questions")
-        suggestions.append("练习题应由独立题目模块生成，不要默认写进课件。")
+    case_courseware = plan.get("case_courseware") if isinstance(plan.get("case_courseware"), dict) else None
+    # case_courseware 现在是可选的——叙事内容由 lesson-html.json 承载
+    if case_courseware:
+        flashcards = courseware_items(case_courseware.get("knowledge_preview_flashcards"))
+        case_background = case_courseware.get("case_background") if isinstance(case_courseware.get("case_background"), dict) else {}
+        guided_steps = courseware_items(case_courseware.get("guided_story_practice"))
+        review_sources = courseware_items(case_courseware.get("review_sources"))
+        if flashcards and not all(has_substantive_courseware_text(item.get("mastery_check")) for item in flashcards):
+            warnings.append("today-lesson.flashcard-mastery-check-missing")
+            suggestions.append("课前知识预告里的每张知识卡都要有可判断的掌握检查。")
+        if case_background and (
+            not has_substantive_courseware_text(case_background.get("situation"), min_chars=10)
+            or not has_substantive_courseware_text(case_background.get("problem_to_solve"), min_chars=6)
+        ):
+            issues.append("today-lesson.case-background-hollow")
+            suggestions.append("案例背景要写清真实情境和要解决的问题，不能只保留空壳字段。")
+        if (case_courseware.get("exercise_policy") or {}).get("embedded_questions"):
+            issues.append("today-lesson.embedded-practice-questions")
+            suggestions.append("练习题应由独立题目模块生成，不要默认写进课件。")
+        if review_sources and not all(
+            has_substantive_courseware_text(item.get("material_title"), min_chars=2)
+            and has_substantive_courseware_text(item.get("locator"), min_chars=2)
+            and has_substantive_courseware_text(item.get("review_focus"), min_chars=2)
+            for item in review_sources
+        ):
+            warnings.append("today-lesson.review-source-incomplete")
+            suggestions.append("回看资料要包含材料名、定位和复习重点。")
     if focus_points and not any(str(item.get("why_it_matters") or "").strip() for item in focus_points):
         warnings.append("today-lesson.why-it-matters-weak")
         suggestions.append("为 today_focus 补上为什么现在要掌握它，而不是只列名词。")
+
+    if case_courseware:
+        hollow_protagonist_patterns = [
+            r"一个(?:开发|程序|工程|数据|运维|测试|前端|后端|全栈)(?:人员|工程师|者|师)",
+            r"某个(?:项目|团队|公司|部门|产品|系统|平台|应用)",
+            r"一个(?:项目|团队|公司|部门|产品|系统|平台|应用)",
+            r"某(?:开发|公司|项目|团队|平台|系统)",
+            r"你(?:是|在)一个",
+            r"假设你是一个",
+            r"一位(?:开发|程序|工程)",
+        ]
+        bg = case_courseware.get("case_background") if isinstance(case_courseware.get("case_background"), dict) else {}
+        situation_text = str(bg.get("situation") or "")
+        if situation_text and any(re.search(pattern, situation_text) for pattern in hollow_protagonist_patterns):
+            warnings.append("today-lesson.hollow-protagonist")
+            suggestions.append("案例背景避免使用空洞设定，改用有具体姓名、角色、时间、地点的真实场景。")
 
     valid = not issues
     confidence = 0.88 if not issues and not warnings else (0.72 if not issues else 0.46)
@@ -1320,28 +1343,24 @@ def build_daily_lesson_prompt(grounding_context: dict[str, Any], fallback_plan: 
 
 硬性要求：
 1. 只输出一个 JSON object，不要 Markdown，不要解释 JSON 外的文字。
-2. 最终讲解只允许围绕四个固定部分：
-   - materials_used
-   - today_focus
-   - project_driven_explanation
-   - review_suggestions
-3. 默认采用项目驱动：允许多个小任务串讲，但每个任务都要说明真实背景、会卡在哪里、为什么现在引入这些知识。
-4. materials_used 只能保留“材料名 + 章节/页码/小节/segment 定位 + 选择理由”的轻量引用；禁止复制材料正文、长摘录或 source_excerpt。
-5. today_focus 必须回答“今天到底要掌握什么、为什么今天先掌握它、怎样算掌握”。
-6. review_suggestions 必须同时覆盖：
+2. 本 JSON 是 lesson-artifact.json 的运行时元数据，不承载完整课件正文；正式课件正文由独立的 lesson-html.json 承载，并通过 /long-output-html 渲染。
+3. lesson-html.json 的正文应按三段教学框架组织：
+   - Part 1 往期复习：复习上期学习内容、掌握情况、错题/薄弱点，以及它们如何引出本期内容。
+   - Part 2 本期知识点讲解：围绕本期核心问题展开真实案例、逐步推理、代码/实验/反例和可验证掌握检查。
+   - Part 3 本期内容回看：列出材料来源与回看重点，尽量精确到材料名、章节、页码、段落、section 或 locator；资料没有精确定位时必须说明限制，禁止编造。
+4. 不限制 section 数量、字数、是否使用列表或代码块；允许表格、列表、callout、代码块、对照讲解。不要把课件写成固定的三幕故事模板。
+5. materials_used 只能保留“材料名 + 章节/页码/小节/segment 定位 + 选择理由”的轻量引用；课件正文中可以适当引用 source_excerpt 中的原文关键句（不超过 150 字/处），但禁止大段复制材料正文。
+6. today_focus 必须回答“今天到底要掌握什么、为什么今天先掌握它、怎样算掌握”。
+7. review_suggestions 必须同时覆盖：
    - 对今日内容的复盘
    - 结合当前进度/旧知识债的复习建议
    - 下一步如何衔接网页练习题或后续 session
-7. 如果 topic/domain 是 Git，只能围绕 Git 的快照、commit、暂存区、git add、git status、branch/remote 等上下文中出现的内容；不得混入 HTTP、JSON、日志、测试、部署等无关题材。
-8. 优先吸收 compact_grounding_context 里的真实材料摘要、例子、坑点和 mastery target；fallback_four_part_lesson 只作为保底结构，不要机械改写它。
-9. 讲解要像正式课程，不要写“你可以考虑”“下面是建议结构”这类提示语。
-10. 若 fallback 文案里有”待补充”或空字段，必须结合 compact_grounding_context 重写成具体内容，不要原样保留。
-11. 教学节奏必须遵循 compact_grounding_context 中的 teaching_pattern：
-    - lecture-first：先概念讲解（today_focus + project_driven_explanation），再练习（review_suggestions 中给出练习建议），最后复盘
-    - practice-first：先出 2-3 道探底题（嵌入 project_driven_explanation 的第一个 task），再概念讲解，再深化练习
-    - sandwich：先短练习 → 概念讲解 → 主要练习 → 复盘
-    - adaptive：根据 weak_points 和 review_debt 动态选择；默认 lecture-first
-12. 必须生成 case_courseware，包含 knowledge_preview_flashcards、case_background、guided_story_practice、review_sources；课件只完成“教”的工作，练习题由独立题目模块生成，不要把练习题默认嵌入课件。
+8. 如果 topic/domain 是 Git，只能围绕 Git 的快照、commit、暂存区、git add、git status、branch/remote 等上下文中出现的内容；不得混入 HTTP、JSON、日志、测试、部署等无关题材。
+9. 优先吸收 compact_grounding_context 里的真实材料摘要、例子、坑点和 mastery target；fallback_four_part_lesson 只作为保底结构，不要机械改写它。
+10. 讲解要像正式课程，不要写“你可以考虑”“下面是建议结构”这类提示语。
+11. 若 fallback 文案里有“待补充”或空字段，必须结合 compact_grounding_context 重写成具体内容，不要原样保留。
+12. 不要求生成 case_courseware；case_courseware 仅是旧版兼容字段。练习题由独立题目模块生成，不要把练习题默认嵌入课件。
+13. 每个核心知识点必须至少关联一处材料来源；review_suggestions 中的回看项优先使用 material_title、locator、key_quote、review_focus 这类对象格式。
 
 必须返回这些字段：
 - title
@@ -1350,19 +1369,14 @@ def build_daily_lesson_prompt(grounding_context: dict[str, Any], fallback_plan: 
 - why_today
 - materials_used
 - today_focus
-- project_driven_explanation
 - review_suggestions
-- case_courseware
 - source_trace
 
 字段要求：
 - materials_used: 数组；每项包含 material_title, locator；可选 segment_id, match_reason, source_status
 - today_focus: 对象，包含 summary, focus_points
-- today_focus.focus_points: 数组；每项包含 point, why_it_matters, mastery_check；可选 source_segment_ids, related_tasks
-- project_driven_explanation: 对象，包含 summary, tasks
-- project_driven_explanation.tasks: 数组；每项包含 task_name, real_context, blocker, why_now, knowledge_points, explanation, how_to_apply, extension；可选 source_segment_ids, source_status
-- review_suggestions: 对象，包含 summary, today_review, progress_review, next_actions
-- case_courseware: 对象，包含 knowledge_preview_flashcards, case_background, guided_story_practice, review_sources, exercise_policy；exercise_policy.embedded_questions 必须为 false
+- today_focus.focus_points: 数组；每项包含 point, why_it_matters, mastery_check；可选 source_segment_ids
+- review_suggestions: 对象，包含 summary, today_review, progress_review, next_actions；today_review 和 progress_review 的每一项推荐使用 focus/material/locator/key_quote 对象格式
 
 COMPACT_GROUNDING_CONTEXT:
 {json_for_prompt(compact_grounding, limit=9000)}
@@ -1501,7 +1515,7 @@ def build_lesson_grounding_context(topic: str, plan_source: dict[str, Any], sele
                 "source_key_points": segment.get("source_key_points") or [],
                 "source_examples": segment.get("source_examples") or [],
                 "source_pitfalls": segment.get("source_pitfalls") or [],
-                "source_excerpt": compact_source_text(segment.get("source_excerpt") or "", 700),
+                "source_excerpt": compact_source_text(segment.get("source_excerpt") or "", 2000),
                 "locator": segment.get("locator") if isinstance(segment.get("locator"), dict) else {},
             }
             for segment in selected_segments
@@ -1862,6 +1876,9 @@ def build_daily_lesson_plan(topic: str, plan_source: dict[str, Any], selected_se
     return synchronize_lesson_plan(plan)
 
 
+# DEPRECATED: 课件渲染已迁移到 long-output-html 管线。
+# 保留此函数仅供 session_orchestrator.py 的 fallback 路径使用。
+# 新代码应通过 --lesson-html-json + render_long_output_html.py 产出 lesson.html。
 def render_daily_lesson_plan_markdown(plan: dict[str, Any]) -> str:
     title = str(plan.get("title") or "当日学习计划").strip()
     today_focus = plan.get("today_focus") if isinstance(plan.get("today_focus"), dict) else {}

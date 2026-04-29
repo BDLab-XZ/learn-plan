@@ -26,9 +26,9 @@ class LeetCodeQuestionContractTest(unittest.TestCase):
             "type": "code",
             "category": "code",
             "title": "两数之和：返回满足目标和的下标",
-            "problem_statement": "实现 two_sum(nums, target)，返回两个不同元素的下标，使它们的和等于 target。",
-            "input_spec": "nums: list[int]，长度 2 到 10^4；target: int。",
-            "output_spec": "返回 list[int]，包含两个不同下标，顺序不限。",
+            "problem_statement": "实现 `two_sum(nums, target)`。\n\n**目标**：返回两个不同元素的下标，使它们的和等于 `target`。\n\n要求：\n- 不能重复使用同一个元素\n- 返回任意一个满足条件的下标组合",
+            "input_spec": "`nums: list[int]`，长度 2 到 10^4；`target: int`。",
+            "output_spec": "返回 `list[int]`，包含两个不同下标，顺序不限。",
             "constraints": ["每个输入恰好存在一个答案", "不能重复使用同一个元素"],
             "examples": [
                 {
@@ -172,6 +172,24 @@ class LeetCodeQuestionContractTest(unittest.TestCase):
         self.assertFalse(review.get("valid"))
         self.assertIn("code-two-sum: question.code.input_spec_missing", review.get("issues", []))
 
+    def test_validate_questions_payload_rejects_one_paragraph_code_statement(self) -> None:
+        question = self._code_question()
+        question["problem_statement"] = "实现 two_sum 函数，接收 nums 和 target，返回两个不同元素下标，使它们的和等于 target，不能重复使用同一个元素，每个输入恰好存在一个答案。"
+
+        review = validate_questions_payload(self._questions_payload(question))
+
+        self.assertFalse(review.get("valid"))
+        self.assertTrue(any("problem_statement 为纯文本一段到底" in issue for issue in review.get("issues", [])))
+
+    def test_validate_questions_payload_rejects_semicolon_packed_constraints(self) -> None:
+        question = self._code_question()
+        question["constraints"] = "每个输入恰好存在一个答案；不能重复使用同一个元素；返回顺序不限"
+
+        review = validate_questions_payload(self._questions_payload(question))
+
+        self.assertFalse(review.get("valid"))
+        self.assertTrue(any("constraints 必须用数组" in issue for issue in review.get("issues", [])))
+
     def test_validate_questions_payload_rejects_open_question_by_default(self) -> None:
         question = {
             "id": "open-1",
@@ -211,6 +229,9 @@ class LeetCodeQuestionContractTest(unittest.TestCase):
         self.assertIn("hidden_tests", prompt)
         self.assertIn("scoring_rubric", prompt)
         self.assertIn("capability_tags", prompt)
+        self.assertIn("Markdown 可读文本", prompt)
+        self.assertIn("每条独立成行", prompt)
+        self.assertIn("禁止用分号堆成一行", prompt)
         self.assertIn("禁止生成 open / written / short_answer / free_text", prompt)
         self.assertNotIn("允许生成 concept / code / open", prompt)
         self.assertNotIn("open 题 type 必须是 written", prompt)
@@ -227,6 +248,7 @@ class LeetCodeQuestionContractTest(unittest.TestCase):
 
         for required in (
             "LeetCode-like",
+            "problem_statement",
             "input_spec",
             "output_spec",
             "constraints",
@@ -235,6 +257,8 @@ class LeetCodeQuestionContractTest(unittest.TestCase):
             "题干和测试用例不一致",
             "禁止 open / written / short_answer / free_text",
             "泄露 hidden tests",
+            "Markdown 可读文本",
+            "分号堆成一行",
         ):
             self.assertIn(required, prompt)
         self.assertNotIn("code/open/concept", prompt)

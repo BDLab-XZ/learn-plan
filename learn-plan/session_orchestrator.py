@@ -144,6 +144,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--resume-schedule", help="自动回流到 /learn-plan 时使用的 schedule")
     parser.add_argument("--resume-preference", help="自动回流到 /learn-plan 时使用的 preference")
     parser.add_argument("--lesson-artifact-json", help="外部注入的 lesson artifact JSON 路径")
+    parser.add_argument("--lesson-html-json", help="外部注入的课件 HTML JSON 路径（long-output-html 格式）")
     parser.add_argument("--question-artifact-json", help="外部注入的 questions artifact JSON 路径")
     parser.add_argument("--question-review-json", help="外部注入的 strict question review JSON 路径")
     return parser.parse_args()
@@ -269,21 +270,63 @@ def run_bootstrap(args: argparse.Namespace, session_dir: Path, questions_path: P
     return subprocess.run(command, check=False).returncode
 
 
-def write_daily_lesson_plan(plan_path: Path, payload: dict[str, Any], session_dir: Path) -> Path:
+def write_daily_lesson_plan(plan_path: Path, payload: dict[str, Any], session_dir: Path, *, lesson_html_json: str | None = None) -> Path:
     plan_source = payload.get("plan_source") if isinstance(payload.get("plan_source"), dict) else {}
     daily_plan = plan_source.get("daily_lesson_plan") if isinstance(plan_source.get("daily_lesson_plan"), dict) else {}
     date_text = payload.get("date") or time.strftime("%Y-%m-%d")
-    root_markdown_path = plan_path.parent / f"learn-today-{date_text}.md"
-    root_notebook_path = plan_path.parent / f"learn-today-{date_text}.ipynb"
-    content = render_daily_lesson_plan_markdown(daily_plan) if daily_plan else "# 当日学习计划\n\n- 暂无可生成的教学计划内容。\n"
-    root_markdown_path.write_text(content, encoding="utf-8")
-    notebook = render_daily_lesson_notebook(daily_plan) if daily_plan else render_daily_lesson_notebook({"title": "当日学习计划"})
-    root_notebook_path.write_text(json.dumps(notebook, ensure_ascii=False, indent=2), encoding="utf-8")
-    plan_source["lesson_path"] = str(root_notebook_path)
-    plan_source["daily_plan_artifact_path"] = str(root_notebook_path)
-    plan_source["lesson_notebook_path"] = str(root_notebook_path)
-    plan_source["lesson_markdown_path"] = str(root_markdown_path)
-    return root_notebook_path
+    root_html_path = session_dir / "lesson.html"
+
+    if lesson_html_json and Path(lesson_html_json).exists():
+        # 新管线：先校验 lesson-html.json 内容质量，再渲染
+        from learn_runtime.lesson_html_validation import validate_lesson_html_json
+
+        json_text = Path(lesson_html_json).read_text(encoding="utf-8")
+        try:
+            lesson_data = json.loads(json_text)
+            quality = validate_lesson_html_json(lesson_data)
+            if not quality.get("valid"):
+                issues_text = "；".join(quality["issues"][:6])
+                raise ValueError(f"lesson-html.json 内容质量不合格：{issues_text}")
+        except json.JSONDecodeError as e:
+            raise ValueError(f"lesson-html.json JSON 解析失败：{e}") from e
+
+        # 渲染
+        render_script = Path("/Users/xinyuan/.claude/scripts/render_long_output_html.py")
+        if render_script.exists():
+            import subprocess
+            html_result = subprocess.run(
+                ["python3", str(render_script)],
+                input=json_text, capture_output=True, text=True,
+            )
+            if html_result.returncode == 0:
+                rendered_path = html_result.stdout.strip().splitlines()[-1] if html_result.stdout.strip() else ""
+                if rendered_path and Path(rendered_path).exists():
+                    import shutil
+                    shutil.copy2(rendered_path, root_html_path)
+            else:
+                print(f"警告：long-output-html 渲染失败，回退到旧管线。stderr: {html_result.stderr[:300]}")
+        else:
+            print(f"警告：渲染脚本不存在 {render_script}，回退到旧管线。")
+    else:
+        raise ValueError(
+            "未提供 --lesson-html-json。请 Agent 按 learn-today/SKILL.md §4.1 生成 /long-output-html 兼容 JSON。"
+            " 要求覆盖三段教学框架：Part 1 往期复习、Part 2 本期知识点讲解、Part 3 本期内容回看，"
+            " 并在内容回看中提供材料名、章节、页码、段落、section 或 locator 等具体引用信息。"
+        )
+
+    if not root_html_path.exists():
+        # Fallback 仅在新管线渲染失败时使用
+        print("使用已废弃的旧渲染器生成课件。叙事质量受限。")
+        content = render_daily_lesson_plan_markdown(daily_plan) if daily_plan else "# 当日学习计划\n\n- 暂无可生成的教学计划内容。\n"
+        html_content = f"<!doctype html><meta charset=utf-8><pre>{content}</pre>"
+        root_html_path.write_text(html_content, encoding="utf-8")
+
+    # 不再生成 .ipynb 副本
+    plan_source["lesson_path"] = str(root_html_path)
+    plan_source["daily_plan_artifact_path"] = str(root_html_path)
+    plan_source["lesson_notebook_path"] = None
+    plan_source["lesson_markdown_path"] = None
+    return root_html_path
 
 
 
@@ -308,17 +351,21 @@ def main() -> int:
     plan_text = read_text_if_exists(plan_path)
     topic = (args.topic or extract_topic_from_plan(plan_text) or "算法基础").strip()
 
+    lesson_html_json = getattr(args, "lesson_html_json", None)
     if is_complete_session(session_dir) and not args.force_generate:
-        existing_payload = read_json_if_exists(session_dir / "questions.json")
-        daily_plan_path = write_daily_lesson_plan(plan_path, existing_payload, session_dir) if existing_payload else None
+        questions_path = session_dir / "questions.json"
+        existing_payload = read_json_if_exists(questions_path)
+        daily_plan_path = write_daily_lesson_plan(plan_path, existing_payload, session_dir, lesson_html_json=lesson_html_json) if existing_payload else None
+        if existing_payload:
+            write_json(questions_path, existing_payload)
         print_orchestrator_summary(session_dir, plan_path, load_materials(plan_path, topic), daily_plan_path=daily_plan_path)
         return run_bootstrap(args, session_dir, None)
 
     questions_path = session_dir / "questions.json"
     materials = load_materials(plan_path, topic)
     payload = runtime_build_questions_payload(args, topic, plan_text, materials)
+    daily_plan_path = write_daily_lesson_plan(plan_path, payload, session_dir, lesson_html_json=lesson_html_json)
     write_json(questions_path, payload)
-    daily_plan_path = write_daily_lesson_plan(plan_path, payload, session_dir)
     print_orchestrator_summary(session_dir, plan_path, materials, daily_plan_path=daily_plan_path)
     return run_bootstrap(args, session_dir, questions_path)
 

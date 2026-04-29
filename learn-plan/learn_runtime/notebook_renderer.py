@@ -46,6 +46,8 @@ def _collect_code_examples(plan: dict[str, Any]) -> list[str]:
     return examples[:4]
 
 
+# DEPRECATED: 课件渲染已迁移到 long-output-html 管线。
+# 保留此函数仅供向后兼容，新代码不应再调用。
 def render_daily_lesson_notebook(plan: dict[str, Any]) -> dict[str, Any]:
     markdown = render_daily_lesson_plan_markdown(plan)
     cells: list[dict[str, Any]] = []

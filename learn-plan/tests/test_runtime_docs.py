@@ -28,7 +28,8 @@ class RuntimeDocsTest(unittest.TestCase):
         text = path.read_text(encoding="utf-8")
 
         self.assertNotIn("--project-path", text)
-        self.assertIn("--semantic-summary-json", text)
+        # 已废弃：功能合并到 /learn-today Step 6，不再保留 CLI 参数引用
+        self.assertIn("已废弃", text)
 
     def test_docs_define_selective_subagent_strategy(self) -> None:
         docs = {
@@ -39,6 +40,8 @@ class RuntimeDocsTest(unittest.TestCase):
             "WORKFLOW_DESIGN.md": SKILL_DIR / "WORKFLOW_DESIGN.md",
             "learn-today/SKILL.md": SKILL_DIR.parent / "learn-today" / "SKILL.md",
             "learn-test/SKILL.md": SKILL_DIR.parent / "learn-test" / "SKILL.md",
+            "question-schema.md": SKILL_DIR / "docs" / "question-schema.md",
+            "lesson-schema.md": SKILL_DIR / "docs" / "lesson-schema.md",
             "learn-today-update/SKILL.md": SKILL_DIR.parent / "learn-today-update" / "SKILL.md",
             "learn-test-update/SKILL.md": SKILL_DIR.parent / "learn-test-update" / "SKILL.md",
         }
@@ -59,7 +62,8 @@ class RuntimeDocsTest(unittest.TestCase):
         self.assertIn("缺出题/审题 artifact", combined)
         self.assertIn("阻断", combined)
         self.assertIn("test-grade", combined)
-        self.assertIn("--semantic-review-json", (SKILL_DIR.parent / "learn-test-update" / "SKILL.md").read_text(encoding="utf-8"))
+        # learn-test-update 已废弃：语义审查合并到 /learn-test Step 4
+        self.assertIn("已废弃", (SKILL_DIR.parent / "learn-test-update" / "SKILL.md").read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

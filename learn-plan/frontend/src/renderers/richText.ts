@@ -29,7 +29,7 @@ export function renderRichText(value: string | string[] | undefined): string {
 
   const flushParagraph = () => {
     if (!paragraph.length) return
-    blocks.push(`<p>${renderInline(paragraph.join('<br>'))}</p>`)
+    blocks.push(`<p class="rich-text-paragraph">${renderInline(paragraph.join('<br>'))}</p>`)
     paragraph = []
   }
 

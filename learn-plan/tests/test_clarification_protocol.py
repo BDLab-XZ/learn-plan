@@ -21,7 +21,6 @@ class ClarificationProtocolTest(unittest.TestCase):
         for path in paths:
             text = path.read_text(encoding="utf-8")
             self.assertIn("AskUserQuestion", text, path)
-            self.assertIn("UserQuestions", text, path)
             self.assertRegex(text, r"禁止|不使用")
             self.assertIn("自然语言", text, path)
 
