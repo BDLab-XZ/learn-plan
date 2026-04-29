@@ -271,6 +271,8 @@ def build_context_snapshot(questions_data: dict[str, Any]) -> dict[str, Any]:
         "today_teaching_brief": dict(plan_source.get("today_teaching_brief") or {}),
         "lesson_review": dict(plan_source.get("lesson_review") or {}),
         "question_review": dict(plan_source.get("question_review") or {}),
+        "question_scope": dict(plan_source.get("question_scope") or {}),
+        "question_plan": dict(plan_source.get("question_plan") or {}),
         "review_targets": list(plan_source.get("review_targets") or []),
         "lesson_focus_points": list(plan_source.get("lesson_focus_points") or []),
         "project_tasks": list(plan_source.get("project_tasks") or []),

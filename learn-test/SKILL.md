@@ -9,9 +9,10 @@ description: 基于学习进度和历史生成阶段测试，启动测试 sessio
 
 ## 0. 核心原则
 
-1. **题目必须绑定知识点和来源**：每道题对应 learn-plan.md 中的能力维度 + materials 中的具体段落。
-2. **双 Agent 出题 + 审题**：出题和审题必须由两个独立的子 Agent 分别完成，审题标准与 /learn-today 一致。
-3. **复盘要具体**：不说"加强练习"，而是说"重新读 XX 资料第 Y 章第 Z 节"。
+1. **题目必须绑定知识点和来源**：每道题对应 `question-scope.json` 中的能力维度、知识点或材料来源。
+2. **四步出题协议**：先生成 `question-scope.json`，再生成 `question-plan.json`，再生成 `question-artifact.json`，最后由独立审题 Agent 生成 `question-review.json`。
+3. **test 不依赖 lesson artifact**：测试 session 不要求 `lesson-html-json` 或 `lesson-artifact-json`；初始测试从目的分析报告提炼 scope，历史阶段测试从 learn-plan.md、progress.json 和 learner_model 提炼 scope。
+4. **复盘要具体**：不说"加强练习"，而是说"重新读 XX 资料第 Y 章第 Z 节"。
 
 ---
 
@@ -31,9 +32,12 @@ description: 基于学习进度和历史生成阶段测试，启动测试 sessio
 
 ```text
   Step 1: 确认测试范围和模式
-    → Step 2: 出题（子 Agent A）+ 审题（子 Agent B）
-    → Step 3: 组装 session 并启动
-    → Step 4: 测试后复盘（含测试记录回写）
+    → Step 2: 范围规划（question-scope.json）
+    → Step 3: 出题规划（question-plan.json）
+    → Step 4: 生成题目（question-artifact.json）
+    → Step 5: 审题（question-review.json）
+    → Step 6: 组装 session 并启动
+    → Step 7: 测试后复盘（含测试记录回写）
     → 更新 learn-plan.md 和 learner_model
 ```
 
@@ -41,36 +45,58 @@ description: 基于学习进度和历史生成阶段测试，启动测试 sessio
 
 ## 3. Step 1：确认测试范围和模式
 
-- 读取 learn-plan.md 的进度指针 + 历史测试记录 + learner_model.json 中的薄弱项
+- 初始测试：读取 `/learn-plan` Phase 1 的目的分析报告；此时可以没有 `learn-plan.md`
+- 历史阶段测试：读取 learn-plan.md 的进度指针 + 历史 progress.json + learner_model.json 中的薄弱项
 - 确认测试模式（用户指定或推荐）
 - 确认题目数量（默认 10-15 题）
 - 确认覆盖的能力维度
 
 ---
 
-## 4. Step 2：出题 + 审题
+## 4. Step 2-5：范围规划 → 出题规划 → 生成题目 → 审题
 
-与 /learn-today 同一标准：
+与 /learn-today 同一标准，但 scope 来源按测试类型区分：
 
-- **出题（子 Agent A）**：出题前必须先读取 `docs/question-schema.md`，严格按 schema 生成 JSON。每题绑定能力维度/materials segment，干扰项必须有真实迷惑性，难度有梯度
-- **审题（子 Agent B）**：独立审查，检查答案正确性、干扰项质量、覆盖度、表述清晰度；代码题必须检查 `problem_statement` Markdown 排版、`input_spec/output_spec/constraints` 独立非空、constraints 不得分号堆成一行
+### 4.1 范围规划（子 Agent A）
+
+- 初始测试输入：目的分析报告、用户目标、已知背景、任何已收集的材料索引
+- 历史阶段测试输入：learn-plan.md、历史 progress.json、learner_model.json、materials/index.json
+- 产出 `question-scope.json`：说明本次考什么、不考什么、依据是什么、覆盖哪些能力维度/知识点/材料来源
+
+### 4.2 出题规划（子 Agent B）
+
+- 输入 `question-scope.json`
+- 产出 `question-plan.json`：题目总数、题型分布、难度分布、逐题能力绑定、forbidden_question_types
+- forbidden_question_types 必须包含 `open`、`written`、`short_answer`、`free_text`
+
+### 4.3 生成题目（子 Agent C）
+
+- 输入 `question-scope.json` + `question-plan.json` + `docs/question-schema.md`
+- 产出 `question-artifact.json`
+- 每题绑定能力维度/materials segment 或 scope_basis，干扰项必须有真实迷惑性，难度有梯度
+- 禁止生成 open/written/short_answer/free_text 类型题目（会被 runtime 自动拒绝）
+
+### 4.4 审题（子 Agent D）
+
+- 输入 `question-scope.json` + `question-plan.json` + 生成题目
+- 独立审查答案正确性、干扰项质量、覆盖度、表述清晰度、题型/难度/能力是否符合规划
+- 代码题必须检查 `problem_statement` Markdown 排版、`input_spec/output_spec/constraints` 独立非空、constraints 不得分号堆成一行
 - 审题失败 → 修改 → 重审，直到通过
 - 禁止使用内置题库或 fallback
-- 禁止生成 open/written/short_answer 类型题目（会被 runtime 自动拒绝）
 
 ---
 
-## 5. Step 3：组装 session 并启动
+## 5. Step 6：组装 session 并启动
 
 ```bash
 python3 "$HOME/.claude/skills/learn-plan/session_orchestrator.py" \
   --session-dir "<session目录>" \
   --topic "<学习主题>" \
-  --plan-path "<learn-plan.md路径>" \
+  --plan-path "<learn-plan.md路径或目的分析报告路径>" \
   --session-type test \
   --test-mode "<general|weakness-focused|mixed>" \
-  --lesson-artifact-json "<lesson-artifact.json>" \
-  --lesson-html-json "<lesson-html.json>" \
+  --question-scope-json "<question-scope.json>" \
+  --question-plan-json "<question-plan.json>" \
   --question-artifact-json "<question-artifact.json>" \
   --question-review-json "<question-review.json>"
 ```
@@ -79,7 +105,7 @@ python3 "$HOME/.claude/skills/learn-plan/session_orchestrator.py" \
 
 ---
 
-## 6. Step 4：测试后复盘
+## 6. Step 7：测试后复盘
 
 用户完成测试后，读取 progress.json，分析结果。
 

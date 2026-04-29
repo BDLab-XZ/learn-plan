@@ -37,8 +37,84 @@ def base_question(level: str = "basic") -> dict[str, object]:
     }
 
 
+def add_scope_plan(payload: dict[str, object]) -> dict[str, object]:
+    questions = payload.get("questions") if isinstance(payload.get("questions"), list) else []
+    question_mix: dict[str, int] = {}
+    difficulty_distribution: dict[str, int] = {}
+    for question in questions:
+        if not isinstance(question, dict):
+            continue
+        qtype = "code" if question.get("category") == "code" or question.get("type") == "code" else str(question.get("type") or "single_choice")
+        question_mix[qtype] = question_mix.get(qtype, 0) + 1
+        level = str(question.get("difficulty_level") or question.get("difficulty") or "medium")
+        difficulty_distribution[level] = difficulty_distribution.get(level, 0) + 1
+    scope = {
+        "schema_version": "learn-plan.question_scope.v1",
+        "scope_id": "scope-difficulty-fixture",
+        "source_profile": "today-lesson",
+        "session_type": "today",
+        "session_intent": "learning",
+        "assessment_kind": None,
+        "test_mode": None,
+        "topic": payload.get("topic") or "Python 基础",
+        "language_policy": payload.get("language_policy") or {"user_facing_language": "zh-CN"},
+        "scope_basis": [{"kind": "lesson", "summary": "difficulty fixture"}],
+        "target_capability_ids": ["python-assignment"],
+        "target_concepts": ["赋值符号"],
+        "review_targets": [],
+        "lesson_focus_points": ["赋值符号"],
+        "project_tasks": [],
+        "project_blockers": [],
+        "source_material_refs": [],
+        "difficulty_target": {},
+        "minimum_pass_shape": {"required_open_question_count": 0},
+        "exclusions": [],
+        "evidence": ["fixture"],
+        "generation_trace": {"status": "ok"},
+    }
+    plan = {
+        "schema_version": "learn-plan.question_plan.v1",
+        "plan_id": "plan-difficulty-fixture",
+        "scope_id": "scope-difficulty-fixture",
+        "source_profile": "today-lesson",
+        "session_type": "today",
+        "session_intent": "learning",
+        "assessment_kind": None,
+        "test_mode": None,
+        "topic": payload.get("topic") or "Python 基础",
+        "question_count": len(questions),
+        "question_mix": question_mix,
+        "difficulty_distribution": difficulty_distribution,
+        "planned_items": [],
+        "coverage_matrix": [],
+        "minimum_pass_shape": {"required_open_question_count": 0},
+        "forbidden_question_types": ["open", "written", "short_answer", "free_text"],
+        "generation_guidance": [],
+        "review_checklist": [],
+        "evidence": ["scope-difficulty-fixture"],
+        "generation_trace": {"status": "ok"},
+    }
+    plan_source = payload.setdefault("plan_source", {})
+    if isinstance(plan_source, dict):
+        plan_source["question_scope"] = scope
+        plan_source["question_plan"] = plan
+        plan_source.setdefault("language_policy", payload.get("language_policy") or {"user_facing_language": "zh-CN"})
+        grounding_context = plan_source.setdefault("lesson_grounding_context", {})
+        if isinstance(grounding_context, dict):
+            grounding_context["semantic_profile"] = "today"
+            grounding_context["question_scope"] = scope
+            grounding_context["question_plan"] = plan
+    payload["selection_context"] = {
+        "language_policy": payload.get("language_policy") or {"user_facing_language": "zh-CN"},
+        "question_scope": scope,
+        "question_plan": plan,
+        "daily_lesson_plan": {"semantic_profile": "today", "question_scope": scope, "question_plan": plan},
+    }
+    return payload
+
+
 def base_payload() -> dict[str, object]:
-    return {
+    return add_scope_plan({
         "date": "2026-04-29",
         "topic": "Python 基础",
         "mode": "today-generated",
@@ -55,7 +131,7 @@ def base_payload() -> dict[str, object]:
         },
         "materials": [],
         "questions": [base_question("basic"), base_question("medium")],
-    }
+    })
 
 
 class QuestionDifficultyGateTest(unittest.TestCase):

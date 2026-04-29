@@ -27,7 +27,7 @@ from learn_runtime.material_selection import select_material_segments
 from learn_runtime.plan_source import DEFAULT_TOPIC_FAMILIES, make_plan_source, normalize_language_policy
 from learn_runtime.question_banks import build_question_bank, build_python_question_generation_seed, domain_supports_code_questions
 from learn_runtime.question_validation import ensure_questions_payload_quality
-from learn_runtime.schemas import ensure_questions_basic
+from learn_runtime.schemas import ensure_question_plan_basic, ensure_question_scope_basic, ensure_questions_basic
 
 
 def ensure_question_shape(data: dict[str, Any]) -> None:
@@ -111,10 +111,64 @@ def normalize_injected_question_review(review_artifact: dict[str, Any] | None) -
     return normalize_strict_question_review(review_artifact, metadata)
 
 
+def _require_question_scope_and_plan(question_scope: dict[str, Any] | None, question_plan: dict[str, Any] | None) -> tuple[dict[str, Any], dict[str, Any]]:
+    if not isinstance(question_scope, dict) or not question_scope:
+        raise ValueError("缺少 Agent 生成的 question scope artifact：请先生成 question-scope-json")
+    if not isinstance(question_plan, dict) or not question_plan:
+        raise ValueError("缺少 Agent 生成的 question plan artifact：请先生成 question-plan-json")
+    ensure_question_scope_basic(question_scope)
+    ensure_question_plan_basic(question_plan)
+    if str(question_plan.get("scope_id") or "").strip() != str(question_scope.get("scope_id") or "").strip():
+        raise ValueError("question plan 与 question scope 的 scope_id 不一致")
+    return question_scope, question_plan
+
+
+def build_assessment_context_artifact_from_scope(
+    topic: str,
+    plan_source: dict[str, Any],
+    question_scope: dict[str, Any],
+    question_plan: dict[str, Any],
+    language_policy: dict[str, Any],
+) -> dict[str, Any]:
+    minimum_pass_shape = dict(question_plan.get("minimum_pass_shape") or question_scope.get("minimum_pass_shape") or {})
+    target_capability_ids = normalize_string_list(question_scope.get("target_capability_ids") or [])
+    context = {
+        "topic": topic,
+        "language_policy": language_policy,
+        "lesson_generation_mode": "assessment-scope",
+        "assessment_kind": question_scope.get("assessment_kind"),
+        "session_intent": question_scope.get("session_intent") or "assessment",
+        "semantic_profile": "initial-test" if question_scope.get("source_profile") == "initial-diagnostic" else "stage-test",
+        "question_source": "agent-injected",
+        "diagnostic_generation_mode": "agent-injected" if question_scope.get("source_profile") == "initial-diagnostic" else plan_source.get("diagnostic_generation_mode"),
+        "target_capability_ids": target_capability_ids,
+        "minimum_pass_shape": minimum_pass_shape,
+        "difficulty_target": question_scope.get("difficulty_target") or {},
+        "lesson_focus_points": normalize_string_list(question_scope.get("lesson_focus_points") or question_scope.get("target_concepts") or []),
+        "project_tasks": normalize_string_list(question_scope.get("project_tasks") or []),
+        "project_blockers": normalize_string_list(question_scope.get("project_blockers") or []),
+        "review_targets": normalize_string_list(question_scope.get("review_targets") or []),
+        "today_teaching_brief": {
+            "lesson_focus_points": normalize_string_list(question_scope.get("target_concepts") or question_scope.get("lesson_focus_points") or []),
+            "review_targets": normalize_string_list(question_scope.get("review_targets") or []),
+        },
+        "lesson_review": {"valid": True, "issues": [], "warnings": [], "verdict": "assessment-scope"},
+        "question_scope": question_scope,
+        "question_plan": question_plan,
+        "generation_trace": {"status": "ok", "artifact_source": "question-scope-json", "reason": "assessment-scope"},
+        "quality_review": {"valid": True, "issues": [], "warnings": [], "verdict": "assessment-scope"},
+    }
+    return context
+
+
 def build_questions_payload(args: argparse.Namespace, topic: str, plan_text: str, materials: list[dict[str, Any]]) -> dict[str, Any]:
     session_dir = Path(args.session_dir).expanduser().resolve()
     plan_path = Path(args.plan_path).expanduser().resolve()
     lesson_artifact = load_optional_payload(getattr(args, "lesson_artifact_json", None))
+    question_scope, question_plan = _require_question_scope_and_plan(
+        load_optional_payload(getattr(args, "question_scope_json", None)),
+        load_optional_payload(getattr(args, "question_plan_json", None)),
+    )
     question_artifact = load_optional_payload(getattr(args, "question_artifact_json", None))
     review_artifact = load_optional_payload(getattr(args, "question_review_json", None))
     domain = core_infer_domain(topic, DEFAULT_TOPIC_FAMILIES, fallback_text=plan_text)
@@ -149,16 +203,21 @@ def build_questions_payload(args: argparse.Namespace, topic: str, plan_text: str
             }
     lesson_grounding_context = build_lesson_grounding_context(topic, plan_source, selected_segments, mastery_targets)
     lesson_grounding_context["language_policy"] = language_policy
+    lesson_grounding_context["question_scope"] = question_scope
+    lesson_grounding_context["question_plan"] = question_plan
     if domain:
         lesson_grounding_context["domain"] = domain
-    daily_lesson_plan = build_runtime_lesson_artifact(
-        topic,
-        plan_source,
-        selected_segments,
-        mastery_targets,
-        lesson_grounding_context,
-        lesson_artifact,
-    )
+    if args.session_type == "today":
+        daily_lesson_plan = build_runtime_lesson_artifact(
+            topic,
+            plan_source,
+            selected_segments,
+            mastery_targets,
+            lesson_grounding_context,
+            lesson_artifact,
+        )
+    else:
+        daily_lesson_plan = build_assessment_context_artifact_from_scope(topic, plan_source, question_scope, question_plan, language_policy)
     lesson_review = dict(daily_lesson_plan.get("lesson_review") or daily_lesson_plan.get("quality_review") or {})
     today_teaching_brief = dict(daily_lesson_plan.get("today_teaching_brief") or {})
     if execution_mode in {"diagnostic", "test-diagnostic"}:
@@ -188,6 +247,10 @@ def build_questions_payload(args: argparse.Namespace, topic: str, plan_text: str
     lesson_grounding_context["project_tasks"] = project_tasks
     lesson_grounding_context["project_blockers"] = project_blockers
     lesson_grounding_context["review_targets"] = review_targets
+    plan_source["question_scope"] = question_scope
+    plan_source["question_plan"] = question_plan
+    daily_lesson_plan["question_scope"] = question_scope
+    daily_lesson_plan["question_plan"] = question_plan
     plan_source["lesson_grounding_context"] = lesson_grounding_context
     plan_source["selected_segments"] = selected_segments
     plan_source["mastery_targets"] = mastery_targets
@@ -289,7 +352,12 @@ def build_questions_payload(args: argparse.Namespace, topic: str, plan_text: str
     diagnostic_blueprint_tags = normalize_string_list(
         diagnostic_blueprint.get("target_capability_ids") or diagnostic_blueprint_basis.get("target_capability_ids") or []
     )
-    resolved_target_capability_ids = diagnostic_blueprint_tags or normalize_string_list(plan_source.get("target_capability_ids") or [])
+    scope_target_capability_ids = normalize_string_list(question_scope.get("target_capability_ids") or [])
+    resolved_target_capability_ids = scope_target_capability_ids or diagnostic_blueprint_tags or normalize_string_list(plan_source.get("target_capability_ids") or [])
+    if resolved_target_capability_ids:
+        plan_source["target_capability_ids"] = resolved_target_capability_ids
+    if isinstance(question_scope.get("difficulty_target"), dict) and question_scope.get("difficulty_target"):
+        plan_source["difficulty_target"] = question_scope.get("difficulty_target")
     lesson_grounding_context["assessment_kind"] = assessment_kind
     lesson_grounding_context["session_intent"] = session_intent
     lesson_grounding_context["semantic_profile"] = semantic_profile
@@ -525,7 +593,9 @@ def build_questions_payload(args: argparse.Namespace, topic: str, plan_text: str
             "diagnostic_blueprint_version": plan_source.get("diagnostic_blueprint_version"),
             "diagnostic_generation_mode": plan_source.get("diagnostic_generation_mode"),
             "diagnostic_blueprint_basis_source": diagnostic_blueprint_basis.get("source"),
-            "scope_target_capability_ids": diagnostic_blueprint_tags,
+            "scope_target_capability_ids": scope_target_capability_ids or diagnostic_blueprint_tags,
+            "question_scope": question_scope,
+            "question_plan": question_plan,
             "target_stages": python_selection_context.get("target_stages") if domain == "python" else [],
             "target_clusters": python_selection_context.get("target_clusters") if domain == "python" else [],
             "resolved_target_clusters": python_selection_context.get("resolved_target_clusters") if domain == "python" else [],

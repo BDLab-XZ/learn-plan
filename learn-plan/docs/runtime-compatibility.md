@@ -31,7 +31,7 @@
 - `/learn-test`
 - `/learn-download-materials`
 
-今日学习回写与测试回写不再作为独立 slash skill 暴露，分别收口到 `/learn-today` Step 6 与 `/learn-test` Step 4。
+今日学习回写与测试回写不再作为独立 slash skill 暴露，分别收口到 `/learn-today` Step 6 与 `/learn-test` Step 7。
 
 ## 2.2 CLI facade 文件
 

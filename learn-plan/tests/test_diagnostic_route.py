@@ -31,7 +31,7 @@ class DiagnosticRouteTest(unittest.TestCase):
         self.assertEqual(route.get("next_round_index"), 2)
         self.assertEqual(
             route.get("required_artifacts"),
-            ["lesson-artifact-json", "question-artifact-json", "question-review-json"],
+            ["question-scope-json", "question-plan-json", "question-artifact-json", "question-review-json"],
         )
         self.assertEqual(route.get("next_action"), "prepare_next_diagnostic_round_artifacts")
 

@@ -143,9 +143,10 @@
 python3 "$HOME/.claude/skills/learn-plan/session_orchestrator.py" \
   --session-type test \
   --test-mode general \
-  --plan-path "<root>/learn-plan.md" \
+  --plan-path "<root>/learn-plan.md 或目的分析报告路径" \
   --session-dir "<root>/sessions/<YYYY-MM-DD>-test" \
-  --lesson-artifact-json "<Agent生成的lesson artifact>" \
+  --question-scope-json "<Agent生成的question scope artifact>" \
+  --question-plan-json "<Agent生成的question plan artifact>" \
   --question-artifact-json "<Agent生成的questions artifact>" \
   --question-review-json "<Agent生成的strict review artifact>"
 ```
@@ -211,13 +212,13 @@ python3 "$HOME/.claude/skills/learn-plan/session_orchestrator.py" \
 执行器应：
 1. 确认测试模式：`general | weakness-focused | mixed`。
 2. 确认 session 目录。
-3. 读取 `learn-plan.md` 与历史 progress。
-4. 调用 `session_orchestrator.py --session-type test --test-mode ...`。
+3. 初始测试读取目的分析报告；历史阶段测试读取 `learn-plan.md`、历史 progress 与 learner_model。
+4. 先生成 `question-scope.json`、`question-plan.json`、`question-artifact.json`、`question-review.json`，再调用 `session_orchestrator.py --session-type test --test-mode ...`。
 5. 校验 session 四件套。
 6. 启动服务并打开浏览器。
 
 禁止：
-- 缺出题/审题 artifact 时静默 fallback 到确定性内容题或内置题库。
+- 缺 scope/plan/出题/审题 artifact 时静默 fallback 到确定性内容题或内置题库。
 - 未完成 session 就调用 test update。
 
 ---
@@ -272,7 +273,7 @@ python3 "$HOME/.claude/skills/learn-plan/session_orchestrator.py" \
 | diagnostic 未作答 | 不写 evaluated，不进入 approval |
 | approval 未明确 | 保持 draft/needs-revision |
 | finalize 质量校验失败 | 回到对应 blocking stage |
-| 缺出题/审题 artifact | 阻断 session 启动，重新派发 subagent 生成或修复 artifact |
+| 缺 scope/plan/出题/审题 artifact | 阻断 session 启动，重新派发 subagent 生成或修复 artifact |
 | materials 下载失败 | 标记失败，runtime 回退 metadata-only |
 | preprocessing 失败 | 不阻断 session |
 

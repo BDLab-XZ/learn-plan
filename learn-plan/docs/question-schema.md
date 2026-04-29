@@ -2,9 +2,90 @@
 
 出题 Agent 生成的 `question-artifact.json` 必须通过 `question_validation.py` 的校验。本文件是 Schema 与 Runtime 之间的契约。
 
+题目生产链路统一分为四个 Agent artifact 和一个 runtime payload：
+
+1. `question-scope.json`：范围规划。说明本次练/考什么、不练/不考什么、依据是什么、覆盖哪些能力维度、知识点和材料来源。
+2. `question-plan.json`：出题规划。说明题目总数、题型分布、难度分布、逐题要求、能力覆盖和 `forbidden_question_types`。
+3. `question-artifact.json`：题目候选。只包含 Agent 生成的题目内容，不等同于最终 `questions.json`。
+4. `question-review.json`：严格审题结果。审查题目是否正确、是否符合 scope/plan、是否满足排版和 test-grade 约束。
+5. `questions.json`：runtime 最终 payload。由 `session_orchestrator.py` 组装，写入 `plan_source`、`selection_context`、scope/plan 快照和最终题目。
+
+`today` 与 `test` 的差异只在 `question-scope.json` 的来源：today 来自课件和材料原文；初始测试来自目的分析报告；历史阶段测试来自 `learn-plan.md`、历史 `progress.json` 和 learner model。`test` 不要求 `lesson-html-json` 或 `lesson-artifact-json`。
+
 ---
 
-## 1. 顶层结构（11 个必填字段）
+## 1. question-scope.json（范围规划）
+
+最小结构：
+
+```json
+{
+  "schema_version": "learn-plan.question_scope.v1",
+  "scope_id": "scope-...",
+  "source_profile": "today-lesson | initial-diagnostic | history-stage-test",
+  "session_type": "today | test",
+  "session_intent": "learning | assessment",
+  "assessment_kind": null,
+  "test_mode": null,
+  "topic": "...",
+  "language_policy": {"user_facing_language": "zh-CN"},
+  "scope_basis": [],
+  "target_capability_ids": [],
+  "target_concepts": [],
+  "review_targets": [],
+  "lesson_focus_points": [],
+  "project_tasks": [],
+  "project_blockers": [],
+  "source_material_refs": [],
+  "difficulty_target": {},
+  "minimum_pass_shape": {"required_open_question_count": 0},
+  "exclusions": [],
+  "evidence": [],
+  "generation_trace": {"status": "ok"}
+}
+```
+
+`source_profile` 约束：
+- `today-lesson`：`session_type=today`，必须有 `lesson_focus_points` 或 `target_concepts`。
+- `initial-diagnostic`：`session_type=test`，`assessment_kind=initial-test`，scope 来源是目的分析报告。
+- `history-stage-test`：`session_type=test`，`assessment_kind=stage-test`，scope 来源必须含历史进度、learn-plan 或 learner model 证据。
+
+---
+
+## 2. question-plan.json（出题规划）
+
+最小结构：
+
+```json
+{
+  "schema_version": "learn-plan.question_plan.v1",
+  "plan_id": "plan-...",
+  "scope_id": "scope-...",
+  "source_profile": "today-lesson | initial-diagnostic | history-stage-test",
+  "session_type": "today | test",
+  "session_intent": "learning | assessment",
+  "assessment_kind": null,
+  "test_mode": null,
+  "topic": "...",
+  "question_count": 8,
+  "question_mix": {"single_choice": 5, "multiple_choice": 1, "true_false": 1, "code": 1},
+  "difficulty_distribution": {"basic": 1, "medium": 6, "hard": 1},
+  "planned_items": [],
+  "coverage_matrix": [],
+  "minimum_pass_shape": {"required_open_question_count": 0},
+  "forbidden_question_types": ["open", "written", "short_answer", "free_text"],
+  "generation_guidance": [],
+  "review_checklist": [],
+  "evidence": [],
+  "generation_trace": {"status": "ok"}
+}
+```
+
+`question_count` 必须等于 `question_mix` 与 `difficulty_distribution` 的数量总和。`question_mix` 应使用具体 runtime 题型：`single_choice`、`multiple_choice`、`true_false`、`code`；不要把 `concept` 当作正式 mix 键。
+
+---
+
+## 3. question-artifact.json / questions.json 顶层结构（11 个必填字段）
 
 ```json
 {

@@ -139,6 +139,55 @@ class LeetCodeQuestionContractTest(unittest.TestCase):
         self.assertIn("submit_result.failed_case_summaries_too_many", issues)
 
     def _questions_payload(self, question: dict[str, object]) -> dict[str, object]:
+        qtype = "code" if question.get("category") == "code" or question.get("type") == "code" else str(question.get("type") or "single_choice")
+        level = str(question.get("difficulty_level") or "medium")
+        capabilities = list(question.get("capability_tags") or []) or ["python"]
+        scope = {
+            "schema_version": "learn-plan.question_scope.v1",
+            "scope_id": "scope-stage-fixture",
+            "source_profile": "history-stage-test",
+            "session_type": "test",
+            "session_intent": "assessment",
+            "assessment_kind": "stage-test",
+            "test_mode": "general",
+            "topic": "Python",
+            "language_policy": {"user_facing_language": "zh-CN"},
+            "scope_basis": [{"kind": "progress", "summary": "history progress learner_model"}],
+            "target_capability_ids": capabilities,
+            "target_concepts": [],
+            "review_targets": [],
+            "lesson_focus_points": [],
+            "project_tasks": [],
+            "project_blockers": [],
+            "source_material_refs": [],
+            "difficulty_target": {},
+            "minimum_pass_shape": {"required_open_question_count": 0},
+            "exclusions": [],
+            "evidence": ["fixture"],
+            "generation_trace": {"status": "ok"},
+        }
+        plan = {
+            "schema_version": "learn-plan.question_plan.v1",
+            "plan_id": "plan-stage-fixture",
+            "scope_id": "scope-stage-fixture",
+            "source_profile": "history-stage-test",
+            "session_type": "test",
+            "session_intent": "assessment",
+            "assessment_kind": "stage-test",
+            "test_mode": "general",
+            "topic": "Python",
+            "question_count": 1,
+            "question_mix": {qtype: 1},
+            "difficulty_distribution": {level: 1},
+            "planned_items": [],
+            "coverage_matrix": [],
+            "minimum_pass_shape": {"required_open_question_count": 0},
+            "forbidden_question_types": ["open", "written", "short_answer", "free_text"],
+            "generation_guidance": [],
+            "review_checklist": [],
+            "evidence": ["scope-stage-fixture"],
+            "generation_trace": {"status": "ok"},
+        }
         return {
             "date": "2026-04-25",
             "topic": "Python",
@@ -150,15 +199,27 @@ class LeetCodeQuestionContractTest(unittest.TestCase):
             "language_policy": {"user_facing_language": "zh-CN"},
             "plan_source": {
                 "language_policy": {"user_facing_language": "zh-CN"},
+                "question_scope": scope,
+                "question_plan": plan,
                 "lesson_grounding_context": {
-                    "semantic_profile": "today",
+                    "semantic_profile": "stage-test",
+                    "session_intent": "assessment",
+                    "assessment_kind": "stage-test",
+                    "target_capability_ids": capabilities,
+                    "question_scope": scope,
+                    "question_plan": plan,
                     "minimum_pass_shape": {},
                 },
                 "question_generation_mode": "agent-subagent",
                 "strict_question_review": {"valid": True, "verdict": "pass", "issues": []},
                 "deterministic_question_review": {"valid": True, "verdict": "pass", "issues": []},
             },
-            "selection_context": {"language_policy": {"user_facing_language": "zh-CN"}},
+            "selection_context": {
+                "language_policy": {"user_facing_language": "zh-CN"},
+                "question_scope": scope,
+                "question_plan": plan,
+                "daily_lesson_plan": {"semantic_profile": "stage-test", "question_scope": scope, "question_plan": plan},
+            },
             "materials": [],
             "questions": [question],
         }

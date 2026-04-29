@@ -17,6 +17,8 @@ from learn_runtime.schemas import (
     preflight_code_question_tests,
     REQUIRED_QUESTIONS_TOP_LEVEL,
     validate_question_difficulty_fields,
+    validate_question_plan_basic,
+    validate_question_scope_basic,
     validate_questions_basic,
     validate_test_grade_question,
 )
@@ -266,6 +268,112 @@ def validate_question_item(item: Any) -> list[str]:
     return issues
 
 
+def _question_scope_from_payload(plan_source: dict[str, Any], selection_context: dict[str, Any]) -> dict[str, Any]:
+    value = plan_source.get("question_scope") if isinstance(plan_source.get("question_scope"), dict) else selection_context.get("question_scope")
+    return dict(value or {}) if isinstance(value, dict) else {}
+
+
+def _question_plan_from_payload(plan_source: dict[str, Any], selection_context: dict[str, Any]) -> dict[str, Any]:
+    value = plan_source.get("question_plan") if isinstance(plan_source.get("question_plan"), dict) else selection_context.get("question_plan")
+    return dict(value or {}) if isinstance(value, dict) else {}
+
+
+def _question_type_key(item: dict[str, Any]) -> str:
+    if str(item.get("category") or "").strip() == "code" or str(item.get("type") or "").strip() == "code":
+        return "code"
+    qtype = str(item.get("type") or "").strip()
+    return qtype or str(item.get("category") or "unknown").strip() or "unknown"
+
+
+def _question_capabilities(item: dict[str, Any]) -> list[str]:
+    source_trace = item.get("source_trace") if isinstance(item.get("source_trace"), dict) else {}
+    return normalize_string_list(
+        item.get("target_capability_ids")
+        or source_trace.get("target_capability_ids")
+        or item.get("capability_tags")
+        or []
+    )
+
+
+def _validate_scope_plan_alignment(
+    data: dict[str, Any],
+    questions: list[Any],
+    category_counts: dict[str, int],
+    difficulty_counts: dict[str, int],
+    capability_counts: dict[str, int],
+    plan_source: dict[str, Any],
+    selection_context: dict[str, Any],
+) -> tuple[list[str], list[str]]:
+    issues: list[str] = []
+    warnings: list[str] = []
+    question_scope = _question_scope_from_payload(plan_source, selection_context)
+    question_plan = _question_plan_from_payload(plan_source, selection_context)
+    if not question_scope:
+        issues.append("缺少 question_scope：必须先生成 question-scope.json")
+        return issues, warnings
+    if not question_plan:
+        issues.append("缺少 question_plan：必须先生成 question-plan.json")
+        return issues, warnings
+    issues.extend(validate_question_scope_basic(question_scope))
+    issues.extend(validate_question_plan_basic(question_plan))
+    for field in ("session_type", "session_intent", "assessment_kind", "test_mode"):
+        payload_value = data.get(field)
+        scope_value = question_scope.get(field)
+        plan_value = question_plan.get(field)
+        if scope_value != payload_value:
+            issues.append(f"question_scope.{field}_mismatch")
+        if plan_value != payload_value:
+            issues.append(f"question_plan.{field}_mismatch")
+    if str(question_plan.get("scope_id") or "").strip() != str(question_scope.get("scope_id") or "").strip():
+        issues.append("question_plan.scope_id_mismatch")
+    try:
+        expected_count = int(question_plan.get("question_count") or 0)
+    except (TypeError, ValueError):
+        expected_count = 0
+    if expected_count and expected_count != len(questions):
+        issues.append(f"question_plan.question_count_mismatch:{len(questions)}/{expected_count}")
+    actual_type_counts: dict[str, int] = {}
+    for item in questions:
+        if isinstance(item, dict):
+            key = _question_type_key(item)
+            actual_type_counts[key] = actual_type_counts.get(key, 0) + 1
+    question_mix = question_plan.get("question_mix") if isinstance(question_plan.get("question_mix"), dict) else {}
+    for raw_type, raw_expected in question_mix.items():
+        key = "code" if str(raw_type) == "code" else str(raw_type)
+        try:
+            expected = int(raw_expected)
+        except (TypeError, ValueError):
+            continue
+        actual = actual_type_counts.get(key, 0)
+        if actual != expected:
+            issues.append(f"question_plan.question_mix_mismatch:{key}:{actual}/{expected}")
+    difficulty_distribution = question_plan.get("difficulty_distribution") if isinstance(question_plan.get("difficulty_distribution"), dict) else {}
+    for raw_level, raw_expected in difficulty_distribution.items():
+        level = normalize_difficulty_level(raw_level)
+        if not level:
+            continue
+        try:
+            expected = int(raw_expected)
+        except (TypeError, ValueError):
+            continue
+        actual = difficulty_counts.get(level, 0)
+        if actual != expected:
+            issues.append(f"question_plan.difficulty_distribution_mismatch:{level}:{actual}/{expected}")
+    forbidden_types = set(normalize_string_list(question_plan.get("forbidden_question_types") or []))
+    for key, count in actual_type_counts.items():
+        if key in forbidden_types and count > 0:
+            issues.append(f"question_plan.forbidden_question_type_used:{key}")
+    target_capability_ids = normalize_string_list(question_scope.get("target_capability_ids") or [])
+    if data.get("session_type") == "test" and target_capability_ids:
+        missing = [capability_id for capability_id in target_capability_ids if capability_counts.get(capability_id, 0) <= 0]
+        if missing:
+            issues.append("question_scope.target_capability_ids_uncovered:" + ",".join(missing[:6]))
+    planned_items = question_plan.get("planned_items") if isinstance(question_plan.get("planned_items"), list) else []
+    if planned_items and len(planned_items) != len(questions):
+        warnings.append(f"question_plan.planned_items_count_mismatch:{len(questions)}/{len(planned_items)}")
+    return issues, warnings
+
+
 def summarize_question_repair_plan(review: dict[str, Any]) -> dict[str, Any]:
     repair_plan = normalize_question_repair_plan(review.get("repair_plan")) if isinstance(review, dict) else normalize_question_repair_plan({})
     coverage_gaps = repair_plan.get("coverage_gaps") if isinstance(repair_plan.get("coverage_gaps"), dict) else {}
@@ -363,7 +471,7 @@ def validate_questions_payload(data: dict[str, Any]) -> dict[str, Any]:
             primary_category = str(item.get("primary_category") or source_trace.get("primary_category") or "").strip()
             if primary_category:
                 primary_category_counts[primary_category] = primary_category_counts.get(primary_category, 0) + 1
-            for capability_id in normalize_string_list(item.get("target_capability_ids") or source_trace.get("target_capability_ids") or []):
+            for capability_id in _question_capabilities(item):
                 capability_counts[capability_id] = capability_counts.get(capability_id, 0) + 1
             if not qid:
                 issues.append("存在题目缺少 id")
@@ -416,6 +524,18 @@ def validate_questions_payload(data: dict[str, Any]) -> dict[str, Any]:
         issues.append("grounded 题目生成不足：" + "；".join(grounded_generation_shortfalls))
     if question_generation_mode == "grounded-generation-missing":
         issues.append("question_generation_mode=grounded-generation-missing，当前应阻断并重生成")
+
+    scope_plan_issues, scope_plan_warnings = _validate_scope_plan_alignment(
+        data,
+        questions,
+        category_counts,
+        difficulty_counts,
+        capability_counts,
+        plan_source,
+        selection_context,
+    )
+    issues.extend(scope_plan_issues)
+    warnings.extend(scope_plan_warnings)
 
     for category, actual_levels in sorted(difficulty_by_category.items()):
         expected_distribution = _distribution_target_for_category(difficulty_target, category)

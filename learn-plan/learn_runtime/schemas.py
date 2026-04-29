@@ -15,6 +15,10 @@ LEGACY_OBJECTIVE_TYPE_MAP = {
     "judge": "true_false",
 }
 BLOCKED_FREE_TEXT_TYPES = {"open", "written", "short_answer", "free_text"}
+FORBIDDEN_TEST_GRADE_TYPES = set(BLOCKED_FREE_TEXT_TYPES)
+QUESTION_SCOPE_SCHEMA_VERSION = "learn-plan.question_scope.v1"
+QUESTION_PLAN_SCHEMA_VERSION = "learn-plan.question_plan.v1"
+QUESTION_SCOPE_SOURCE_PROFILES = {"today-lesson", "initial-diagnostic", "history-stage-test"}
 DIFFICULTY_LEVEL_ORDER = ["basic", "medium", "upper_medium", "hard"]
 DIFFICULTY_LEVELS = set(DIFFICULTY_LEVEL_ORDER)
 DIFFICULTY_LABELS = {
@@ -467,6 +471,212 @@ def validate_submit_result_contract(result: dict[str, Any]) -> list[str]:
     return issues
 
 
+def _list_has_non_empty_value(value: Any) -> bool:
+    return isinstance(value, list) and any(str(item).strip() for item in value)
+
+
+def _validate_question_scope_semantics(data: dict[str, Any]) -> list[str]:
+    issues: list[str] = []
+    source_profile = str(data.get("source_profile") or "").strip()
+    session_type = str(data.get("session_type") or "").strip()
+    session_intent = str(data.get("session_intent") or "").strip()
+    assessment_kind = data.get("assessment_kind")
+    if source_profile == "today-lesson":
+        if session_type != "today":
+            issues.append("question_scope.today.session_type_invalid")
+        if session_intent != "learning":
+            issues.append("question_scope.today.session_intent_invalid")
+        if assessment_kind not in (None, ""):
+            issues.append("question_scope.today.assessment_kind_must_be_null")
+        if not (_list_has_non_empty_value(data.get("lesson_focus_points")) or _list_has_non_empty_value(data.get("target_concepts"))):
+            issues.append("question_scope.today.focus_missing")
+    elif source_profile == "initial-diagnostic":
+        if session_type != "test":
+            issues.append("question_scope.initial.session_type_invalid")
+        if session_intent != "assessment":
+            issues.append("question_scope.initial.session_intent_invalid")
+        if assessment_kind != "initial-test":
+            issues.append("question_scope.initial.assessment_kind_invalid")
+        if not _list_has_non_empty_value(data.get("target_capability_ids")):
+            issues.append("question_scope.initial.target_capability_ids_missing")
+        if not _list_has_non_empty_value(data.get("scope_basis")):
+            issues.append("question_scope.initial.scope_basis_missing")
+    elif source_profile == "history-stage-test":
+        if session_type != "test":
+            issues.append("question_scope.history.session_type_invalid")
+        if session_intent != "assessment":
+            issues.append("question_scope.history.session_intent_invalid")
+        if assessment_kind != "stage-test":
+            issues.append("question_scope.history.assessment_kind_invalid")
+        if not (_list_has_non_empty_value(data.get("target_capability_ids")) or _list_has_non_empty_value(data.get("review_targets"))):
+            issues.append("question_scope.history.targets_missing")
+        basis_blob = " ".join(str(item) for item in (data.get("scope_basis") or []))
+        if not any(token in basis_blob for token in ("progress", "learner_model", "history", "learn-plan", "学习记录", "历史")):
+            issues.append("question_scope.history.scope_basis_missing_history")
+    return issues
+
+
+def validate_question_scope_basic(data: dict[str, Any]) -> list[str]:
+    issues: list[str] = []
+    if not isinstance(data, dict) or not data:
+        return ["question_scope.not_object"]
+    required_fields = [
+        "schema_version",
+        "scope_id",
+        "source_profile",
+        "session_type",
+        "session_intent",
+        "assessment_kind",
+        "test_mode",
+        "topic",
+        "language_policy",
+        "scope_basis",
+        "target_capability_ids",
+        "target_concepts",
+        "review_targets",
+        "lesson_focus_points",
+        "project_tasks",
+        "project_blockers",
+        "source_material_refs",
+        "difficulty_target",
+        "minimum_pass_shape",
+        "exclusions",
+        "evidence",
+        "generation_trace",
+    ]
+    for field in required_fields:
+        if field not in data:
+            issues.append(f"question_scope.{field}_missing")
+    if data.get("schema_version") != QUESTION_SCOPE_SCHEMA_VERSION:
+        issues.append("question_scope.schema_version_invalid")
+    if str(data.get("source_profile") or "").strip() not in QUESTION_SCOPE_SOURCE_PROFILES:
+        issues.append("question_scope.source_profile_invalid")
+    if str(data.get("session_type") or "").strip() not in {"today", "test"}:
+        issues.append("question_scope.session_type_invalid")
+    if str(data.get("session_intent") or "").strip() not in {"learning", "assessment"}:
+        issues.append("question_scope.session_intent_invalid")
+    if not isinstance(data.get("language_policy"), dict) or not str((data.get("language_policy") or {}).get("user_facing_language") or "").strip():
+        issues.append("question_scope.language_policy_invalid")
+    for field in ("scope_basis", "target_capability_ids", "target_concepts", "review_targets", "lesson_focus_points", "project_tasks", "project_blockers", "source_material_refs", "exclusions", "evidence"):
+        if field in data and not isinstance(data.get(field), list):
+            issues.append(f"question_scope.{field}_not_list")
+    for field in ("difficulty_target", "minimum_pass_shape", "generation_trace"):
+        if field in data and not isinstance(data.get(field), dict):
+            issues.append(f"question_scope.{field}_not_object")
+    minimum_pass_shape = data.get("minimum_pass_shape") if isinstance(data.get("minimum_pass_shape"), dict) else {}
+    try:
+        required_open_count = int(minimum_pass_shape.get("required_open_question_count") or 0)
+    except (TypeError, ValueError):
+        required_open_count = 0
+    if required_open_count > 0:
+        issues.append("question_scope.minimum_pass_shape.open_not_allowed_by_test_grade")
+    issues.extend(_validate_question_scope_semantics(data))
+    return issues
+
+
+def validate_question_plan_basic(data: dict[str, Any]) -> list[str]:
+    issues: list[str] = []
+    if not isinstance(data, dict) or not data:
+        return ["question_plan.not_object"]
+    required_fields = [
+        "schema_version",
+        "plan_id",
+        "scope_id",
+        "source_profile",
+        "session_type",
+        "session_intent",
+        "assessment_kind",
+        "test_mode",
+        "topic",
+        "question_count",
+        "question_mix",
+        "difficulty_distribution",
+        "planned_items",
+        "coverage_matrix",
+        "minimum_pass_shape",
+        "forbidden_question_types",
+        "generation_guidance",
+        "review_checklist",
+        "evidence",
+        "generation_trace",
+    ]
+    for field in required_fields:
+        if field not in data:
+            issues.append(f"question_plan.{field}_missing")
+    if data.get("schema_version") != QUESTION_PLAN_SCHEMA_VERSION:
+        issues.append("question_plan.schema_version_invalid")
+    if str(data.get("source_profile") or "").strip() not in QUESTION_SCOPE_SOURCE_PROFILES:
+        issues.append("question_plan.source_profile_invalid")
+    if str(data.get("session_type") or "").strip() not in {"today", "test"}:
+        issues.append("question_plan.session_type_invalid")
+    if str(data.get("session_intent") or "").strip() not in {"learning", "assessment"}:
+        issues.append("question_plan.session_intent_invalid")
+    try:
+        question_count = int(data.get("question_count"))
+    except (TypeError, ValueError):
+        question_count = 0
+    if question_count <= 0:
+        issues.append("question_plan.question_count_invalid")
+    question_mix = data.get("question_mix") if isinstance(data.get("question_mix"), dict) else {}
+    if not question_mix:
+        issues.append("question_plan.question_mix_missing")
+    mix_total = 0
+    for raw_type, raw_count in question_mix.items():
+        qtype = normalize_question_type(raw_type)
+        if qtype in FORBIDDEN_TEST_GRADE_TYPES:
+            issues.append("question_plan.question_mix.forbidden_type")
+        if qtype not in CANONICAL_QUESTION_TYPES and qtype not in {"concept"}:
+            issues.append(f"question_plan.question_mix.unknown_type:{raw_type}")
+        try:
+            count = int(raw_count)
+        except (TypeError, ValueError):
+            issues.append(f"question_plan.question_mix.count_invalid:{raw_type}")
+            continue
+        if count < 0:
+            issues.append(f"question_plan.question_mix.count_invalid:{raw_type}")
+            continue
+        mix_total += count
+    if question_count > 0 and mix_total != question_count:
+        issues.append("question_plan.question_mix.count_mismatch")
+    difficulty_distribution = data.get("difficulty_distribution") if isinstance(data.get("difficulty_distribution"), dict) else {}
+    if not difficulty_distribution:
+        issues.append("question_plan.difficulty_distribution_missing")
+    difficulty_total = 0
+    for raw_level, raw_count in difficulty_distribution.items():
+        level = normalize_difficulty_level(raw_level)
+        if not level:
+            issues.append(f"question_plan.difficulty_distribution.level_invalid:{raw_level}")
+        try:
+            count = int(raw_count)
+        except (TypeError, ValueError):
+            issues.append(f"question_plan.difficulty_distribution.count_invalid:{raw_level}")
+            continue
+        if count < 0:
+            issues.append(f"question_plan.difficulty_distribution.count_invalid:{raw_level}")
+            continue
+        difficulty_total += count
+    if question_count > 0 and difficulty_total != question_count:
+        issues.append("question_plan.difficulty_distribution.count_mismatch")
+    forbidden_types = data.get("forbidden_question_types") if isinstance(data.get("forbidden_question_types"), list) else []
+    normalized_forbidden = {normalize_question_type(item) for item in forbidden_types}
+    if not FORBIDDEN_TEST_GRADE_TYPES.issubset(normalized_forbidden):
+        issues.append("question_plan.forbidden_question_types_incomplete")
+    for field in ("planned_items", "coverage_matrix", "forbidden_question_types", "generation_guidance", "review_checklist", "evidence"):
+        if field in data and not isinstance(data.get(field), list):
+            issues.append(f"question_plan.{field}_not_list")
+    for field in ("minimum_pass_shape", "generation_trace"):
+        if field in data and not isinstance(data.get(field), dict):
+            issues.append(f"question_plan.{field}_not_object")
+    minimum_pass_shape = data.get("minimum_pass_shape") if isinstance(data.get("minimum_pass_shape"), dict) else {}
+    try:
+        required_open_count = int(minimum_pass_shape.get("required_open_question_count") or 0)
+    except (TypeError, ValueError):
+        required_open_count = 0
+    if required_open_count > 0:
+        issues.append("question_plan.minimum_pass_shape.open_not_allowed_by_test_grade")
+    return issues
+
+
 def validate_questions_basic(data: dict[str, Any]) -> list[str]:
     issues: list[str] = []
     for key in REQUIRED_QUESTIONS_TOP_LEVEL:
@@ -510,6 +720,18 @@ def validate_progress_basic(data: dict[str, Any]) -> list[str]:
 
 def ensure_questions_basic(data: dict[str, Any]) -> None:
     issues = validate_questions_basic(data)
+    if issues:
+        raise ValueError(issues[0])
+
+
+def ensure_question_scope_basic(data: dict[str, Any]) -> None:
+    issues = validate_question_scope_basic(data)
+    if issues:
+        raise ValueError(issues[0])
+
+
+def ensure_question_plan_basic(data: dict[str, Any]) -> None:
+    issues = validate_question_plan_basic(data)
     if issues:
         raise ValueError(issues[0])
 

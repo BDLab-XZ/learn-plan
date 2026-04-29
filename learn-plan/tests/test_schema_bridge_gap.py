@@ -173,24 +173,19 @@ class LessonSchemaGapTest(unittest.TestCase):
         )
 
 
-# ---- GAP 3: learn-test 缺少 --lesson-artifact-json ----
+# ---- GAP 3: learn-test 不应依赖 lesson artifact ----
 
 class LearnTestCLIGapTest(unittest.TestCase):
-    def test_learn_test_command_missing_lesson_flag(self):
-        """复现 GAP 38：learn-test/SKILL.md 的命令行缺少 --lesson-artifact-json。
-
-        预期 FAIL：文档中没有 --lesson-artifact-json，但 runtime 强制要求。
-        """
+    def test_learn_test_command_uses_scope_plan_without_lesson_artifact(self):
         skill_path = SKILL_DIR.parent / "learn-test" / "SKILL.md"
         text = skill_path.read_text(encoding="utf-8")
 
-        self.assertIn(
-            "--lesson-artifact-json",
-            text,
-            "learn-test/SKILL.md 的命令行缺少 --lesson-artifact-json，"
-            "但 session_orchestrator.py 对所有 session type 都强制要求该参数。"
-            "缺少会导致 ValueError('缺少 Agent 生成的 lesson artifact')。",
-        )
+        self.assertIn("--question-scope-json", text)
+        self.assertIn("--question-plan-json", text)
+        self.assertIn("--question-artifact-json", text)
+        self.assertIn("--question-review-json", text)
+        self.assertNotIn("--lesson-artifact-json", text)
+        self.assertNotIn("--lesson-html-json", text)
 
 
 if __name__ == "__main__":
@@ -218,11 +213,107 @@ def make_valid_question_artifact() -> dict:
             "language_policy": {"user_facing_language": "zh-CN"},
             "question_generation_mode": "agent-injected",
             "question_source": "agent-injected",
+            "question_scope": {
+                "schema_version": "learn-plan.question_scope.v1",
+                "scope_id": "scope-schema-bridge",
+                "source_profile": "today-lesson",
+                "session_type": "today",
+                "session_intent": "learning",
+                "assessment_kind": None,
+                "test_mode": None,
+                "topic": "Python 变量与对象引用",
+                "language_policy": {"user_facing_language": "zh-CN"},
+                "scope_basis": [{"kind": "lesson", "summary": "schema bridge fixture"}],
+                "target_capability_ids": ["python-core"],
+                "target_concepts": ["变量引用", "列表过滤"],
+                "review_targets": [],
+                "lesson_focus_points": ["变量引用语义", "列表过滤"],
+                "project_tasks": [],
+                "project_blockers": [],
+                "source_material_refs": [],
+                "difficulty_target": {},
+                "minimum_pass_shape": {"required_open_question_count": 0},
+                "exclusions": [],
+                "evidence": ["fixture"],
+                "generation_trace": {"status": "ok"},
+            },
+            "question_plan": {
+                "schema_version": "learn-plan.question_plan.v1",
+                "plan_id": "plan-schema-bridge",
+                "scope_id": "scope-schema-bridge",
+                "source_profile": "today-lesson",
+                "session_type": "today",
+                "session_intent": "learning",
+                "assessment_kind": None,
+                "test_mode": None,
+                "topic": "Python 变量与对象引用",
+                "question_count": 2,
+                "question_mix": {"single_choice": 1, "code": 1},
+                "difficulty_distribution": {"medium": 2},
+                "planned_items": [],
+                "coverage_matrix": [],
+                "minimum_pass_shape": {"required_open_question_count": 0},
+                "forbidden_question_types": ["open", "written", "short_answer", "free_text"],
+                "generation_guidance": [],
+                "review_checklist": [],
+                "evidence": ["fixture"],
+                "generation_trace": {"status": "ok"},
+            },
             "daily_lesson_plan": {},
             "lesson_grounding_context": {
                 "semantic_profile": "today",
                 "session_intent": "learning",
             },
+        },
+        "selection_context": {
+            "language_policy": {"user_facing_language": "zh-CN"},
+            "question_scope": {
+                "schema_version": "learn-plan.question_scope.v1",
+                "scope_id": "scope-schema-bridge",
+                "source_profile": "today-lesson",
+                "session_type": "today",
+                "session_intent": "learning",
+                "assessment_kind": None,
+                "test_mode": None,
+                "topic": "Python 变量与对象引用",
+                "language_policy": {"user_facing_language": "zh-CN"},
+                "scope_basis": [{"kind": "lesson", "summary": "schema bridge fixture"}],
+                "target_capability_ids": ["python-core"],
+                "target_concepts": ["变量引用", "列表过滤"],
+                "review_targets": [],
+                "lesson_focus_points": ["变量引用语义", "列表过滤"],
+                "project_tasks": [],
+                "project_blockers": [],
+                "source_material_refs": [],
+                "difficulty_target": {},
+                "minimum_pass_shape": {"required_open_question_count": 0},
+                "exclusions": [],
+                "evidence": ["fixture"],
+                "generation_trace": {"status": "ok"},
+            },
+            "question_plan": {
+                "schema_version": "learn-plan.question_plan.v1",
+                "plan_id": "plan-schema-bridge",
+                "scope_id": "scope-schema-bridge",
+                "source_profile": "today-lesson",
+                "session_type": "today",
+                "session_intent": "learning",
+                "assessment_kind": None,
+                "test_mode": None,
+                "topic": "Python 变量与对象引用",
+                "question_count": 2,
+                "question_mix": {"single_choice": 1, "code": 1},
+                "difficulty_distribution": {"medium": 2},
+                "planned_items": [],
+                "coverage_matrix": [],
+                "minimum_pass_shape": {"required_open_question_count": 0},
+                "forbidden_question_types": ["open", "written", "short_answer", "free_text"],
+                "generation_guidance": [],
+                "review_checklist": [],
+                "evidence": ["fixture"],
+                "generation_trace": {"status": "ok"},
+            },
+            "daily_lesson_plan": {},
         },
         "materials": [],
         "questions": [

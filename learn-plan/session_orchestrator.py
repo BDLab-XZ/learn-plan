@@ -145,6 +145,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--resume-preference", help="自动回流到 /learn-plan 时使用的 preference")
     parser.add_argument("--lesson-artifact-json", help="外部注入的 lesson artifact JSON 路径")
     parser.add_argument("--lesson-html-json", help="外部注入的课件 HTML JSON 路径（long-output-html 格式）")
+    parser.add_argument("--question-scope-json", help="外部注入的 question scope JSON 路径")
+    parser.add_argument("--question-plan-json", help="外部注入的 question plan JSON 路径")
     parser.add_argument("--question-artifact-json", help="外部注入的 questions artifact JSON 路径")
     parser.add_argument("--question-review-json", help="外部注入的 strict question review JSON 路径")
     return parser.parse_args()
@@ -352,10 +354,12 @@ def main() -> int:
     topic = (args.topic or extract_topic_from_plan(plan_text) or "算法基础").strip()
 
     lesson_html_json = getattr(args, "lesson_html_json", None)
+    is_test_session = args.session_type == "test"
+
     if is_complete_session(session_dir) and not args.force_generate:
         questions_path = session_dir / "questions.json"
         existing_payload = read_json_if_exists(questions_path)
-        daily_plan_path = write_daily_lesson_plan(plan_path, existing_payload, session_dir, lesson_html_json=lesson_html_json) if existing_payload else None
+        daily_plan_path = write_daily_lesson_plan(plan_path, existing_payload, session_dir, lesson_html_json=lesson_html_json) if existing_payload and not is_test_session else None
         if existing_payload:
             write_json(questions_path, existing_payload)
         print_orchestrator_summary(session_dir, plan_path, load_materials(plan_path, topic), daily_plan_path=daily_plan_path)
@@ -364,7 +368,8 @@ def main() -> int:
     questions_path = session_dir / "questions.json"
     materials = load_materials(plan_path, topic)
     payload = runtime_build_questions_payload(args, topic, plan_text, materials)
-    daily_plan_path = write_daily_lesson_plan(plan_path, payload, session_dir, lesson_html_json=lesson_html_json)
+    # test session 不需要 lesson.html，只生成题集
+    daily_plan_path = write_daily_lesson_plan(plan_path, payload, session_dir, lesson_html_json=lesson_html_json) if not is_test_session else None
     write_json(questions_path, payload)
     print_orchestrator_summary(session_dir, plan_path, materials, daily_plan_path=daily_plan_path)
     return run_bootstrap(args, session_dir, questions_path)

@@ -302,7 +302,15 @@ def build_semantic_trace_snapshot(
     *,
     seed_constraints: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    question_scope = grounding_context.get("question_scope") if isinstance(grounding_context.get("question_scope"), dict) else daily_lesson_plan.get("question_scope")
+    question_scope = question_scope if isinstance(question_scope, dict) else {}
+    question_plan = grounding_context.get("question_plan") if isinstance(grounding_context.get("question_plan"), dict) else daily_lesson_plan.get("question_plan")
+    question_plan = question_plan if isinstance(question_plan, dict) else {}
     minimum_pass_shape = (seed_constraints or {}).get("minimum_pass_shape") if isinstance((seed_constraints or {}).get("minimum_pass_shape"), dict) else {}
+    if not minimum_pass_shape:
+        minimum_pass_shape = question_plan.get("minimum_pass_shape") if isinstance(question_plan.get("minimum_pass_shape"), dict) else {}
+    if not minimum_pass_shape:
+        minimum_pass_shape = question_scope.get("minimum_pass_shape") if isinstance(question_scope.get("minimum_pass_shape"), dict) else {}
     return {
         "semantic_profile": resolve_semantic_profile(grounding_context, daily_lesson_plan),
         "plan_execution_mode": str(daily_lesson_plan.get("plan_execution_mode") or grounding_context.get("plan_execution_mode") or "").strip(),
@@ -310,7 +318,10 @@ def build_semantic_trace_snapshot(
         "session_intent": str(daily_lesson_plan.get("session_intent") or grounding_context.get("session_intent") or "").strip(),
         "question_source": str(grounding_context.get("question_source") or daily_lesson_plan.get("question_source") or "").strip(),
         "diagnostic_generation_mode": str(grounding_context.get("diagnostic_generation_mode") or daily_lesson_plan.get("diagnostic_generation_mode") or "").strip(),
-        "target_capability_ids": normalize_string_list(daily_lesson_plan.get("target_capability_ids") or grounding_context.get("target_capability_ids") or [])[:8],
+        "target_capability_ids": normalize_string_list(question_scope.get("target_capability_ids") or daily_lesson_plan.get("target_capability_ids") or grounding_context.get("target_capability_ids") or [])[:8],
+        "question_scope_source_profile": str(question_scope.get("source_profile") or "").strip(),
+        "question_plan_id": str(question_plan.get("plan_id") or "").strip(),
+        "question_plan_mix": question_plan.get("question_mix") if isinstance(question_plan.get("question_mix"), dict) else {},
         "diagnostic_blueprint_version": str(daily_lesson_plan.get("diagnostic_blueprint_version") or grounding_context.get("diagnostic_blueprint_version") or "").strip(),
         "round_index": daily_lesson_plan.get("round_index") or grounding_context.get("round_index"),
         "max_rounds": daily_lesson_plan.get("max_rounds") or grounding_context.get("max_rounds"),
@@ -1680,6 +1691,10 @@ def build_question_reviewer_prompt(
     material_alignment = daily_lesson_plan.get("material_alignment") if isinstance(daily_lesson_plan.get("material_alignment"), dict) else {}
     teaching_brief = grounding_context.get("today_teaching_brief") if isinstance(grounding_context.get("today_teaching_brief"), dict) else {}
     semantic_profile = resolve_semantic_profile(grounding_context, daily_lesson_plan)
+    question_scope = grounding_context.get("question_scope") if isinstance(grounding_context.get("question_scope"), dict) else daily_lesson_plan.get("question_scope")
+    question_scope = question_scope if isinstance(question_scope, dict) else {}
+    question_plan = grounding_context.get("question_plan") if isinstance(grounding_context.get("question_plan"), dict) else daily_lesson_plan.get("question_plan")
+    question_plan = question_plan if isinstance(question_plan, dict) else {}
     compact_context = {
         "semantic_profile": semantic_profile,
         "plan_execution_mode": daily_lesson_plan.get("plan_execution_mode") or grounding_context.get("plan_execution_mode"),
@@ -1705,6 +1720,22 @@ def build_question_reviewer_prompt(
             "target_capability_ids": normalize_string_list(material_alignment.get("target_capability_ids") or []),
         },
         "alignment_targets": review_targets,
+        "question_scope": {
+            "scope_id": question_scope.get("scope_id"),
+            "source_profile": question_scope.get("source_profile"),
+            "target_capability_ids": normalize_string_list(question_scope.get("target_capability_ids") or [])[:8],
+            "target_concepts": normalize_string_list(question_scope.get("target_concepts") or [])[:8],
+            "review_targets": normalize_string_list(question_scope.get("review_targets") or [])[:8],
+            "exclusions": normalize_string_list(question_scope.get("exclusions") or [])[:8],
+        },
+        "question_plan": {
+            "plan_id": question_plan.get("plan_id"),
+            "question_count": question_plan.get("question_count"),
+            "question_mix": question_plan.get("question_mix") if isinstance(question_plan.get("question_mix"), dict) else {},
+            "difficulty_distribution": question_plan.get("difficulty_distribution") if isinstance(question_plan.get("difficulty_distribution"), dict) else {},
+            "forbidden_question_types": normalize_string_list(question_plan.get("forbidden_question_types") or [])[:8],
+            "planned_item_count": len(question_plan.get("planned_items") or []) if isinstance(question_plan.get("planned_items"), list) else 0,
+        },
         "completion_criteria": normalize_today_display_list(daily_lesson_plan.get("completion_criteria") or [], limit=6),
         "practice_bridge": normalize_today_display_list(daily_lesson_plan.get("practice_bridge") or [], limit=4),
     }
@@ -1766,7 +1797,7 @@ def build_question_reviewer_prompt(
         )
     review_focus = {
         "today": "1. 题目是否真正绑定当前 today 的 lesson / project / review targets，而不是泛化题库题。\n2. 覆盖是否合理：是否至少显式覆盖 lesson_focus_points、project_tasks/project_blockers、review_targets 中的重要部分。\n3. 题目质量是否可靠：题干清晰、答案可判定、解释不空泛、source_trace/question_role/tags 合理；code 题必须检查 problem_statement/input_spec/output_spec/constraints 是否可读，若题干一段到底或 constraints 用分号堆成一行，必须判 needs-revision。\n4. 若 domain 是 Git，只能围绕 Git；若是 Python，也不能漂移到当前学习主线无关主题。\n5. 如果 deterministic review 已经指出严重问题，只有在题目内容本身足以反驳这些问题时才可判通过。",
-        "initial-test": "1. 题组是否真正服务 initial-test：用于判断当前起点与后续入口，而不是 today 教学或泛化题库题。\n2. 是否真正覆盖 target_capability_ids，并形成可判定的 code/open/concept 证据，而不是只贴 capability 标签。\n3. 是否显式覆盖 lesson_focus_points、project_tasks/project_blockers、review_targets，并让这些类别服务诊断而非教学闭环。\n4. 题目质量是否可靠：题干清晰、答案可判定、解释不空泛、source_trace/question_role/tags 合理。\n5. initial-test 没有已选材料时，不要因为 material_alignment.status=missing 就单独判失败；只有当题目既缺材料绑定、又缺当前阶段/能力/诊断 blocker 绑定时，才可作为证据不足。\n6. 如果 deterministic review 已经指出 minimum_pass_shape / capability / evidence 的严重缺口，只有在题目内容本身足以反驳这些问题时才可判通过。",
+        "initial-test": "1. 题组是否真正服务 initial-test：用于判断当前起点与后续入口，而不是 today 教学或泛化题库题。\n2. 是否真正覆盖 question_scope.target_capability_ids，并形成可判定的 code/objective/concept 证据，而不是只贴 capability 标签。\n3. 是否符合 question_plan：题型、题量、难度分布、能力覆盖和 forbidden_question_types 都必须对齐。\n4. 是否显式覆盖 scope_basis、review_targets、project_tasks/project_blockers，并让这些类别服务诊断而非教学闭环。\n5. 题目质量是否可靠：题干清晰、答案可判定、解释不空泛、source_trace/question_role/tags 合理。\n6. initial-test 没有已选材料时，不要因为 material_alignment.status=missing 就单独判失败；只有当题目既缺材料绑定、又缺当前阶段/能力/诊断 blocker 绑定时，才可作为证据不足。\n7. 如果 deterministic review 已经指出 minimum_pass_shape / capability / evidence 的严重缺口，只有在题目内容本身足以反驳这些问题时才可判通过。",
         "stage-test": "1. 题组是否真正服务阶段性测试：用于验证已学范围、近期弱项与 review debt，而不是退化成 initial-test 或 today 教学题。\n2. 覆盖是否合理：是否围绕已学内容与 review targets 做稳定度校验，而不是只检查抽象定义。\n3. 题目质量是否可靠：题干清晰、答案可判定、解释不空泛、source_trace/question_role/tags 合理；code 题必须检查 problem_statement/input_spec/output_spec/constraints 是否可读，若题干一段到底或 constraints 用分号堆成一行，必须判 needs-revision。\n4. 若 domain 是 Git，只能围绕 Git；若是 Python，也不能漂移到当前阶段性测评无关主题。\n5. 如果 deterministic review 已经指出严重问题，只有在题目内容本身足以反驳这些问题时才可判通过。",
     }
     return f"""你是一个非常严格的审题 reviewer。请审查这组题目是否真的可以用于当前 {semantic_profile} session。
@@ -1778,6 +1809,7 @@ def build_question_reviewer_prompt(
 审查重点：
 {TEST_GRADE_QUESTION_PROMPT_BLOCK}
 {review_focus.get(semantic_profile, review_focus['today'])}
+6. 所有 session 都必须额外检查 question_scope 与 question_plan：题目数量、题型 mix、难度分布、能力覆盖、来源依据和 forbidden_question_types 是否与计划一致；若不一致，必须判 needs-revision。
 
 输出 JSON object，字段必须包含：
 - valid: boolean

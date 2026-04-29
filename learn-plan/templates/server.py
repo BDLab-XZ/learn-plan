@@ -731,7 +731,7 @@ def build_diagnostic_next_route(progress):
         "next_diagnostic_round_required": next_round_required,
         "next_round_index": next_round_index,
         "max_rounds": max_rounds,
-        "required_artifacts": ["lesson-artifact-json", "question-artifact-json", "question-review-json"] if next_round_required else ["semantic-diagnostic-json"],
+        "required_artifacts": ["question-scope-json", "question-plan-json", "question-artifact-json", "question-review-json"] if next_round_required else ["semantic-diagnostic-json"],
         "next_action": "prepare_next_diagnostic_round_artifacts" if next_round_required else "run_semantic_diagnostic_update",
     }
 

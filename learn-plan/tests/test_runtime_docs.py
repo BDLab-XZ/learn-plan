@@ -12,17 +12,20 @@ if str(SKILL_DIR) not in sys.path:
 
 class RuntimeDocsTest(unittest.TestCase):
     def test_session_orchestrator_examples_include_required_artifacts(self) -> None:
-        docs = [
-            SKILL_DIR.parent / "learn-today" / "SKILL.md",
-            SKILL_DIR.parent / "learn-test" / "SKILL.md",
-            SKILL_DIR / "docs" / "skill-operator-guide.md",
-        ]
-        for path in docs:
-            text = path.read_text(encoding="utf-8")
-            self.assertIn("session_orchestrator.py", text, path)
-            self.assertIn("--lesson-artifact-json", text, path)
-            self.assertIn("--question-artifact-json", text, path)
-            self.assertIn("--question-review-json", text, path)
+        today = (SKILL_DIR.parent / "learn-today" / "SKILL.md").read_text(encoding="utf-8")
+        test = (SKILL_DIR.parent / "learn-test" / "SKILL.md").read_text(encoding="utf-8")
+        guide = (SKILL_DIR / "docs" / "skill-operator-guide.md").read_text(encoding="utf-8")
+
+        for text in (today, test, guide):
+            self.assertIn("session_orchestrator.py", text)
+            self.assertIn("--question-scope-json", text)
+            self.assertIn("--question-plan-json", text)
+            self.assertIn("--question-artifact-json", text)
+            self.assertIn("--question-review-json", text)
+
+        self.assertIn("--lesson-artifact-json", today)
+        self.assertNotIn("--lesson-artifact-json", test)
+        self.assertNotIn("--lesson-html-json", test)
 
     def test_deprecated_update_skill_manifests_are_not_registered(self) -> None:
         manifests = [
@@ -41,7 +44,7 @@ class RuntimeDocsTest(unittest.TestCase):
         self.assertIn("Step 6", today)
         self.assertIn("复盘", today)
         self.assertIn("回写", today)
-        self.assertIn("Step 4", test)
+        self.assertIn("Step 7", test)
         self.assertIn("测试后复盘", test)
         self.assertIn("回写", test)
 
@@ -71,7 +74,7 @@ class RuntimeDocsTest(unittest.TestCase):
         self.assertIn("出题", combined)
         self.assertIn("严格审题", combined)
         self.assertIn("语义审查", combined)
-        self.assertIn("缺出题/审题 artifact", combined)
+        self.assertIn("缺 scope/plan/出题/审题 artifact", combined)
         self.assertIn("阻断", combined)
         self.assertIn("test-grade", combined)
 

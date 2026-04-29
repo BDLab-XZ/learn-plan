@@ -99,7 +99,7 @@ cd ~/learning/python
 ```text
 learn-plan.md
 materials/index.json
-sessions/YYYY-MM-DD/lesson.md
+sessions/YYYY-MM-DD/lesson.html
 sessions/YYYY-MM-DD/questions.json
 sessions/YYYY-MM-DD/progress.json
 sessions/YYYY-MM-DD/题集.html

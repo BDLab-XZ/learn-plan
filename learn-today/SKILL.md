@@ -22,7 +22,7 @@ description: 基于 learn-plan.md 生成今日学习内容（课件+练习题）
   Step 1: check-in（进度确认）
     → Step 2: 定位今日内容 + 加载资料
     → Step 3: 生成课件
-    → Step 4: 生成练习题（双 Agent：出题 + 审题）
+    → Step 4: 生成练习题（scope → plan → questions → review）
     → Step 5: 组装 session 并启动
     → Step 6: 学完后复盘（含学习记录回写）
     → 更新 learn-plan.md 和 learner_model
@@ -110,16 +110,23 @@ description: 基于 learn-plan.md 生成今日学习内容（课件+练习题）
 
 ---
 
-## 5. Step 4：生成练习题（三步流程）
+## 5. Step 4：生成练习题（四步流程）
 
-### 5.1 第一步：出题规划（子 Agent A）
+### 5.1 第一步：范围规划（子 Agent A）
 
-派发出题规划子 Agent，输入为：课件内容 + 材料原文（source_excerpt/source_examples/source_pitfalls）+ learn-plan.md 中的用户画像和学习进度。
+派发范围规划子 Agent，输入为：`lesson-artifact.json` + 课件内容 + 材料原文（source_excerpt/source_examples/source_pitfalls）+ learn-plan.md 中的用户画像和学习进度。
 
-产出出题规划 JSON，必须包含：
+产出 `question-scope.json`，必须说明：本次练什么、不练什么、依据是什么、对应哪些知识点/能力维度/材料来源。
+
+### 5.2 第二步：出题规划（子 Agent B）
+
+派发出题规划子 Agent，输入为：`question-scope.json` + 课件内容 + 材料原文 + learn-plan.md 中的用户画像和学习进度。
+
+产出 `question-plan.json`，必须包含：
 - 题目总数（默认 8 题）
 - 每道题的：知识点绑定、题型、难度等级、能力维度
-- 难度分布策略（默认比例 **基础:中等:难题 = 1:7:2**，有诊断薄弱项时可调整为 1:6:3）
+- 难度分布策略（默认比例 **基础:中等:中难/难题 = 1:6:1**，有诊断薄弱项时可调整）
+- forbidden_question_types 必须包含 `open`、`written`、`short_answer`、`free_text`
 
 **难度定义**：
 - **基础题（1 道）**：验证核心概念的基本理解是否正确。不能是"看一眼就知道答案"的送分题
@@ -128,9 +135,9 @@ description: 基于 learn-plan.md 生成今日学习内容（课件+练习题）
 
 **用户基础感知**：规划时必须参考 learn-plan.md 中的用户画像（当前水平、已知薄弱项、诊断结论）。如果用户已有一定基础（如能写 Python 脚本），基础题不要出"print(1+1) 输出什么"这种侮辱智商的题。干扰项必须有真实迷惑性——如果选项可以被不具备该知识的人轻易排除，该题不通过。
 
-### 5.2 第二步：生成题目（子 Agent B）
+### 5.3 第三步：生成题目（子 Agent C）
 
-派发出题子 Agent，输入为：出题规划 + 课件内容 + 材料原文 + `docs/question-schema.md`。
+派发出题子 Agent，输入为：`question-scope.json` + `question-plan.json` + 课件内容 + 材料原文 + `docs/question-schema.md`。
 
 **出题约束**（必须逐条遵守）：
 - **先读 `docs/question-schema.md`**，严格按 JSON schema 生成
@@ -139,9 +146,9 @@ description: 基于 learn-plan.md 生成今日学习内容（课件+练习题）
 - 每题绑定材料来源段落（source_segment_id）
 - 禁止生成 open/written/short_answer 类型
 
-### 5.3 第三步：审题（子 Agent C）
+### 5.4 第四步：审题（子 Agent D）
 
-派发审题子 Agent（独立于前两步），输入为：出题规划 + 生成的题目 + 课件 + 材料原文。
+派发审题子 Agent（独立于前三步），输入为：`question-scope.json` + `question-plan.json` + 生成的题目 + 课件 + 材料原文。
 
 **审题检查清单**（逐题检查）：
 - 每道题的答案是否正确
@@ -154,7 +161,7 @@ description: 基于 learn-plan.md 生成今日学习内容（课件+练习题）
 
 **审题输出**：明确的 pass/fail + 逐题不符合项 + 修改建议。
 
-### 5.4 不使用内置题库
+### 5.5 不使用内置题库
 
 严禁使用 session_orchestrator.py 的内置题库或 fallback。
 
@@ -172,12 +179,14 @@ python3 "$HOME/.claude/skills/learn-plan/session_orchestrator.py" \
   --session-type today \
   --lesson-artifact-json "<lesson-artifact.json>" \
   --lesson-html-json "<lesson-html.json>" \
+  --question-scope-json "<question-scope.json>" \
+  --question-plan-json "<question-plan.json>" \
   --question-artifact-json "<question-artifact.json>" \
   --question-review-json "<question-review.json>"
 ```
 
 产出文件：
-- `lesson.md`（或 `lesson.ipynb`）
+- `lesson.html`
 - `questions.json`
 - `progress.json`
 - `题集.html`

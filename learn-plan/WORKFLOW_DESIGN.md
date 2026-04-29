@@ -16,7 +16,7 @@
 | 入口 | 角色 | 核心产出 |
 |---|---|---|
 | `/learn-plan` | 学习顾问 | learn-plan.md + materials/index.json |
-| `/learn-today` | 日常教师 | lesson.md + 练习题 + 复盘 |
+| `/learn-today` | 日常教师 | lesson.html + 练习题 + 复盘 |
 | `/learn-test` | 阶段测试 | 测试题 + 测试复盘 |
 | `/learn-download-materials` | 资料缓存工具 | 材料下载到本地（独立入口，/learn-plan 中已自动触发） |
 
@@ -90,24 +90,24 @@ Phase 3: 出规划
 ```text
 Step 1: check-in（进度确认，强制）
   → Step 2: 定位今日内容 + 加载资料
-  → Step 3: 生成课件 lesson.md（五部分强制结构）
-  → Step 4: 生成练习题（双 Agent：出题 + 审题）
+  → Step 3: 生成课件 lesson.html（三段教学框架）
+  → Step 4: 生成练习题（scope → plan → questions → review）
   → Step 5: 组装 session 并启动网页
   → Step 6: 学后复盘 → 更新 learn-plan.md + learner_model
 ```
 
-### 4.1 课件强制结构
+### 4.1 课件三段教学框架
 
-1. **今日定位**：学什么、为什么、在路线中的位置
-2. **情景引入**：真实场景/故事 → 卡点 → "现有知识解决不了"
-3. **知识讲解**：来龙去脉 → 用法 → 回到情景解决卡点 → 过程抛问题引导思考
-4. **扩展与注意点**：常见误区、关联知识、进阶方向
-5. **今日小结 + 参考资料**：标注来源 `[来源: 资料名, 章节X, P.Y]`
+1. **往期复习**：上期内容、完成情况、薄弱点和本期衔接理由。
+2. **本期知识点讲解**：从真实任务进入，展示现象、失败尝试、推理步骤、最小例子和掌握检查方式。
+3. **本期内容回看**：列出材料来源、精确 locator、原文短摘录或 review_focus。
 
-### 4.2 练习题双 Agent 机制
+### 4.2 练习题四步协议
 
-- **子 Agent A（出题）**：每题绑定知识点和来源，干扰项有真实迷惑性，难度梯度
-- **子 Agent B（审题）**：独立审查，检查答案正确性、干扰项质量、覆盖度、表述清晰度
+- **子 Agent A（范围规划）**：产出 `question-scope.json`，定义本次练什么、不练什么和依据。
+- **子 Agent B（出题规划）**：产出 `question-plan.json`，定义题量、题型、难度和能力覆盖。
+- **子 Agent C（生成题目）**：产出 `question-artifact.json`，每题绑定知识点和来源，干扰项有真实迷惑性。
+- **子 Agent D（审题）**：产出 `question-review.json`，独立审查正确性、覆盖度、题型/难度/能力是否符合规划。
 - 审题失败 → 修改 → 重审，直到通过
 - 禁止使用内置题库或 fallback
 
@@ -120,13 +120,16 @@ Step 1: check-in（进度确认，强制）
 - 下次预告
 - 追加学习记录到 learn-plan.md，更新 learner_model
 
-## 5. `/learn-test`：四步测试流程
+## 5. `/learn-test`：七步测试流程
 
 ```text
 Step 1: 确认测试范围 + 模式（general / weakness-focused / mixed）
-  → Step 2: 出题 + 审题（双 Agent，与 /learn-today 同标准）
-  → Step 3: 组装 session 并启动网页
-  → Step 4: 测试后复盘 → 更新 learn-plan.md + learner_model
+  → Step 2: 范围规划（question-scope.json）
+  → Step 3: 出题规划（question-plan.json）
+  → Step 4: 生成题目（question-artifact.json）
+  → Step 5: 审题（question-review.json）
+  → Step 6: 组装 session 并启动网页
+  → Step 7: 测试后复盘 → 更新 learn-plan.md + learner_model
 ```
 
 三种模式：
@@ -150,8 +153,10 @@ Step 1: 确认测试范围 + 模式（general / weakness-focused / mixed）
 | 顾问式追问 | 主 agent | 终端自然语言，不用 AskUserQuestion |
 | 资料检索 / 目的分析 | 子 Agent | 多个可并行 |
 | 课件正文 | 主 agent | 直接生成，不需要审课件 Agent |
-| 出题 | 子 Agent A | 独立 |
-| 审题 | 子 Agent B | 独立，不看出题 Agent 的内部推理 |
+| 范围规划 | 子 Agent A | 产出 question-scope.json |
+| 出题规划 | 子 Agent B | 产出 question-plan.json |
+| 出题 | 子 Agent C | 产出 question-artifact.json |
+| 审题 | 子 Agent D | 独立审查，产出 question-review.json |
 | 复盘分析 | 主 agent | 读取 progress.json，做分析 |
 
 ### 6.3 资料来源约束
@@ -193,10 +198,10 @@ Step 1: 确认测试范围 + 模式（general / weakness-focused / mixed）
   用户输入 → Phase 1 深挖+检索 → Phase 2 可选诊断 → Phase 3 草案确认 → learn-plan.md + materials/index.json
 
 /learn-today:
-  learn-plan.md + materials/ + check-in → 课件 lesson.md → 练习题 questions.json → 网页 session → progress.json → 复盘 → learn-plan.md 记录追加 + learner_model 更新
+  learn-plan.md + materials/ + check-in → lesson.html + lesson-artifact.json → question-scope.json → question-plan.json → question-artifact.json → question-review.json → questions.json → 网页 session → progress.json → 复盘 → learn-plan.md 记录追加 + learner_model 更新
 
 /learn-test:
-  learn-plan.md + learner_model + 历史 → 测试题 questions.json → 网页 session → progress.json → 复盘 → learn-plan.md 记录追加 + learner_model 更新
+  目的分析报告或 learn-plan.md + learner_model + 历史 → question-scope.json → question-plan.json → question-artifact.json → question-review.json → questions.json → 网页 session → progress.json → 复盘 → learn-plan.md 记录追加 + learner_model 更新
 ```
 
 ## 9. Python 层边界
