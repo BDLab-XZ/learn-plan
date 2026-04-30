@@ -9,7 +9,7 @@ SKILL_DIR = Path(__file__).resolve().parents[1]
 if str(SKILL_DIR) not in sys.path:
     sys.path.insert(0, str(SKILL_DIR))
 
-from learn_feedback.curriculum_patch import pending_patch_items, update_patch_queue_file
+from learn_feedback.curriculum_patch import build_patch_proposal, pending_patch_items, update_patch_queue_file
 
 
 class CurriculumPatchArtifactTest(unittest.TestCase):
@@ -72,6 +72,27 @@ class CurriculumPatchArtifactTest(unittest.TestCase):
             pending = pending_patch_items(result.get("queue", {}))
             self.assertEqual(len(pending), 1)
             self.assertEqual(pending[0].get("rationale"), "subagent says review conditionals")
+
+    def test_build_patch_proposal_creates_approval_gated_candidate(self) -> None:
+        patch = build_patch_proposal(self._summary(), self._session_facts(), update_type="test")
+
+        self.assertIsNotNone(patch)
+        assert patch is not None
+        self.assertEqual(patch.get("status"), "proposed")
+        self.assertEqual(patch.get("application_policy"), "pending-user-approval")
+        self.assertEqual(patch.get("patch_type"), "review-adjustment")
+        self.assertEqual((patch.get("quality_review") or {}).get("verdict"), "ready")
+
+    def test_build_patch_proposal_without_evidence_is_pending_evidence(self) -> None:
+        session_facts = self._session_facts()
+        session_facts["evidence"] = []
+
+        patch = build_patch_proposal(self._summary(), session_facts, update_type="test")
+
+        self.assertIsNotNone(patch)
+        assert patch is not None
+        self.assertEqual(patch.get("status"), "pending-evidence")
+        self.assertEqual(patch.get("application_policy"), "pending-user-approval")
 
 
 if __name__ == "__main__":

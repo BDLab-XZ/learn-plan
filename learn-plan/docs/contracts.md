@@ -31,7 +31,10 @@
 3. **执行期 session 契约**
    - `questions.json`
    - `progress.json`
+   - `interaction_events.jsonl`
+   - `reflection.json`
 4. **反馈与演进契约**
+   - `.learn-workflow/session_facts.json`
    - `learner_model.json`
    - `curriculum_patch_queue.json`
 
@@ -39,6 +42,8 @@
 - workflow 中间态用于推进 `/learn-plan`，**不能替代** 正式 `learn-plan.md`。
 - `learn-plan.md` 是用户可读的正式 curriculum 主文档，**只允许** 在 `finalize` 或已批准 patch 落地时更新主体结构。
 - `progress.json` 记录 session 事实，不承担长期工作流状态职责。
+- `interaction_events.jsonl` 记录终端学习交互证据，只保存结构化摘要和必要短摘录，不保存完整聊天。
+- `reflection.json` 记录用户明确完成后的 update 前复盘结果；没有 completion signal 时不应生成最终 reflection。
 - `learner_model.json` 保存能力证据与复习债，但不是新的正式 curriculum 主状态源。
 
 ---
@@ -87,6 +92,7 @@
 适用范围：
 - workflow 中间态：`clarification.json`、`research.json`、`diagnostic.json`、`approval.json`
 - runtime/session 产物：`questions.json`、`learn-today-YYYY-MM-DD.md` 对应的结构化 lesson payload
+- session evidence 产物：`interaction_events.jsonl` 条目、`reflection.json`、`.learn-workflow/session_facts.json`
 - feedback 产物：`learner_model.json`、`curriculum_patch_queue.json` 的根对象，以及它们内部的 `evidence_log`、`patches`
 
 语义约定：
@@ -660,6 +666,10 @@
   "weaknesses": [],
   "review_debt": [],
   "mastered_scope": [],
+  "prompted_mastery_scope": [],
+  "preferences": {},
+  "preference_candidates": {},
+  "learning_behaviors": [],
   "last_updated": ""
 }
 ```
@@ -670,6 +680,9 @@
 - 可被 `/learn-today`、`/learn-test`、update 脚本消费。
 - 不应直接替代 `learn-plan.md` 中的长期路线图。
 - 只能表达“当前估计”和“证据”；正式阶段切换仍以计划与 approval 为准。
+- `mastered_scope` 必须 evidence-gated：只有 completion signal 已收到、`reflection.json` 完成、`mastery_judgement.status=mastered` 且 prompting level 为 none/unprompted/unknown 时才可加入。
+- `solid_after_intervention` 必须进入 `prompted_mastery_scope` 或 learning behaviors，并保留 spaced review 信号；`partial` / `fragile` / `blocked` 不得加入 `mastered_scope`。
+- 单次用户反馈先进入 `preference_candidates`；多次稳定反馈或用户明确“以后都这样”才进入稳定 `preferences`。
 
 ---
 
@@ -706,7 +719,7 @@
     {
       "id": "2026-04-14:today:Python",
       "status": "pending-evidence|proposed|approved|rejected|applied",
-      "patch_type": "review-adjustment|advance-proposal|entry-level-adjustment",
+      "patch_type": "review-adjustment|advance-proposal|entry-level-adjustment|next-session-reinforcement|reinforcement-proposal|pre-session-review-adjustment|difficulty-adjustment|teaching-style-adjustment|stage-restructure-proposal|goal-scope-adjustment|material-strategy-review",
       "topic": "",
       "created_at": "",
       "source_update_type": "today|test|diagnostic",
@@ -744,6 +757,8 @@
 - `application_policy` 必须保持 `pending-user-approval`；update 不得直接改长期路线主体。
 - `quality_review` 是 deterministic gate 结果，可用于阻断低质量 patch。
 - `applied` 只能在正式计划完成更新后标记。
+- 单次卡点优先进入 `review_debt` 或 `next-session-reinforcement`；连续同类 evidence 或影响阶段目标时才生成结构性 patch。
+- 缺少 interaction/reflection/pre-session review evidence 的结构性 patch 应降级为 `pending-evidence`。
 
 ---
 
@@ -823,8 +838,9 @@
 8. `掌握度检验设计`
 9. `今日生成规则`
 10. `每日推进表`
-11. `学习记录`
-12. `测试记录`
+11. `当前教学/练习微调`（可选，低风险 feedback 的当前生效策略）
+12. `学习记录`
+13. `测试记录`
 
 ### 11.2 关键兼容要求
 
@@ -945,6 +961,44 @@ Today session 还应允许扩展以下 advisory 字段；它们不阻断 `questi
     "attempted": 0,
     "correct": 0
   },
+  "pre_session_review": {
+    "status": "not_started|completed|skipped",
+    "reviewed_items": [],
+    "questions": [],
+    "user_answers": [],
+    "result": "unknown|passed|not_passed|partial",
+    "passed": null,
+    "weak_points": [],
+    "agent_assessment": null,
+    "user_decision": null,
+    "next_step": null,
+    "evidence": []
+  },
+  "interaction_evidence": [],
+  "user_feedback": {
+    "difficulty": null,
+    "teaching_style": null,
+    "pace": null,
+    "question_design": null,
+    "material_fit": null,
+    "comments": [],
+    "scope": "session"
+  },
+  "mastery_judgement": {
+    "status": "unknown|mastered|solid_after_intervention|partial|fragile|blocked|not_observed",
+    "confidence": 0.0,
+    "evidence": [],
+    "blocking_gaps": [],
+    "next_session_reinforcement": [],
+    "prompting_level": "unknown|none|unprompted|hinted|guided|heavy",
+    "mastery_level": "not_observed|recognition|explanation|application|transfer|diagnosis"
+  },
+  "completion_signal": {
+    "status": "not_received|received|completed|skipped_by_user",
+    "source": null,
+    "received_at": null,
+    "user_message_summary": null
+  },
   "questions": {}
 }
 ```
@@ -962,6 +1016,11 @@ Today session 还应允许扩展以下 advisory 字段；它们不阻断 `questi
 - `summary.total`
 - `summary.attempted`
 - `summary.correct`
+- `pre_session_review.status`
+- `interaction_evidence`
+- `user_feedback.scope`
+- `mastery_judgement.status`
+- `completion_signal.status`
 
 ### 13.3 question 级要求
 
@@ -988,7 +1047,86 @@ Today session 的 `context` 应允许扩展以下字段：
 
 ---
 
-## 14. 契约验收顺序
+## 14. interaction_events.jsonl
+
+每行是一条结构化学习事件。最低结构：
+
+```json
+{
+  "timestamp": "",
+  "session_type": "today|test",
+  "phase": "pre_session_review|during_learning|post_completion_reflection",
+  "source": "main_agent_interaction",
+  "related_material": {},
+  "knowledge_points": [],
+  "user_event": {
+    "type": "question|misconception_observed|instruction_intervention|self_explanation|feedback|completion_signal",
+    "summary": "",
+    "raw_excerpt": ""
+  },
+  "diagnostic_signal": {},
+  "agent_response_summary": "",
+  "follow_up_result": {},
+  "recommended_action": ""
+}
+```
+
+最低校验：必须有 `source`、`phase`、`user_event.summary`，并至少包含 `diagnostic_signal` 或 `follow_up_result`。只保存摘要和必要短摘录，不保存完整聊天 transcript。
+
+---
+
+## 15. reflection.json
+
+`reflection.json` 是用户明确完成学习/测试后的 update 前复盘 artifact。最低结构：
+
+```json
+{
+  "status": "completed|skipped_by_user|pending",
+  "trigger": {
+    "type": "user_completion_signal",
+    "user_message_summary": "",
+    "received_at": ""
+  },
+  "session_type": "today|test",
+  "rounds": [],
+  "mastery_judgement": {},
+  "learning_path_evidence": [],
+  "review_debt": [],
+  "user_feedback": {},
+  "next_actions": []
+}
+```
+
+最低校验：必须有 `status`、`trigger`、`rounds`、`mastery_judgement`。today reflection 是教学性复盘，可提示和纠偏；test reflection 是评估性复盘，提示要少，提示后掌握不等同无提示 mastered。
+
+---
+
+## 16. session_facts.json
+
+`.learn-workflow/session_facts.json` 保存最近一次 update 的事实快照，至少包含：
+
+```json
+{
+  "update_type": "today|test|diagnostic",
+  "date": "",
+  "topic": "",
+  "session_dir": "",
+  "evidence": [],
+  "pre_session_review_facts": {},
+  "completion_signal_facts": {},
+  "interaction_event_facts": [],
+  "interaction_facts": [],
+  "reflection_facts": {},
+  "user_feedback_facts": {},
+  "mastery_judgement_facts": {}
+}
+```
+
+它只做事实聚合，不直接生成课程建议；learner model 和 patch proposal 消费它后再更新反馈状态。
+
+---
+
+## 17. 契约验收顺序
 
 后续实现与重构时，按以下顺序验收：
 
@@ -996,10 +1134,11 @@ Today session 的 `context` 应允许扩展以下字段：
 2. `workflow_state.json` 是否正确给出 route summary
 3. `learn-plan.md` 是否仍能被 `/learn-today` 消费
 4. `questions.json` / `progress.json` 是否仍能驱动现有 runtime
-5. `learner_model.json` / `curriculum_patch_queue.json` 是否只增量增强，不破坏旧链路
+5. `interaction_events.jsonl` / `reflection.json` 是否只增量增强，不破坏现有前端 runtime
+6. `session_facts.json` / `learner_model.json` / `curriculum_patch_queue.json` 是否只增量增强，不破坏旧链路
 
 ---
 
-## 15. 一句话原则
+## 18. 一句话原则
 
 **中间态要结构化，正式态要稳定，执行态要可追踪，反馈态要可演进。**

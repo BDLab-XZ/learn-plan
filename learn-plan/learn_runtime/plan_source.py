@@ -465,6 +465,7 @@ def make_plan_source_from_markdown_fallback(
     learning_profile = extract_first_section(plan_text, ["用户画像", "学习画像"])
     learning_log = extract_section(plan_text, "学习记录")
     test_log = extract_section(plan_text, "测试记录")
+    micro_adjustment_section = extract_section(plan_text, "当前教学/练习微调")
     daily_plan = extract_first_section(plan_text, ["学习安排", "每日推进表"])
     stage_start = extract_section(plan_text, "第一阶段的起步顺序")
     user_model, goal_model, planning_state, preference_state, diagnostic_profile = parse_learning_profile_section(
@@ -472,6 +473,37 @@ def make_plan_source_from_markdown_fallback(
         topic,
         goal_section_text=learning_goal,
     )
+
+    micro_values = extract_prefixed_values(
+        micro_adjustment_section,
+        ["难度微调：", "讲解方式微调：", "节奏微调：", "题型微调：", "材料贴合微调：", "本次反馈："],
+    )
+    micro_learning_style = normalize_string_list(
+        micro_values.get("讲解方式微调：")
+        + micro_values.get("节奏微调：")
+        + micro_values.get("材料贴合微调：")
+        + micro_values.get("本次反馈：")
+    )
+    micro_practice_style = normalize_string_list(
+        micro_values.get("难度微调：")
+        + micro_values.get("题型微调：")
+    )
+    if micro_learning_style or micro_practice_style:
+        preference_state = dict(preference_state)
+        user_model = dict(user_model)
+        preference_state["learning_style"] = normalize_string_list(normalize_string_list(preference_state.get("learning_style")) + micro_learning_style)
+        preference_state["practice_style"] = normalize_string_list(normalize_string_list(preference_state.get("practice_style")) + micro_practice_style)
+        preference_state["current_micro_adjustments"] = {
+            "learning_style": micro_learning_style,
+            "practice_style": micro_practice_style,
+        }
+        preference_state["teaching_pattern"] = resolve_teaching_pattern(
+            normalize_string_list(preference_state.get("delivery_preference")),
+            normalize_string_list(preference_state.get("practice_style")),
+        )
+        user_model["learning_style"] = normalize_string_list(normalize_string_list(user_model.get("learning_style")) + micro_learning_style)
+        user_model["practice_style"] = normalize_string_list(normalize_string_list(user_model.get("practice_style")) + micro_practice_style)
+        user_model["teaching_pattern"] = preference_state["teaching_pattern"]
 
     review_focus = extract_recent_bullet_values(learning_log, ["下次复习重点：", "高频错误点："])
     new_learning = extract_recent_bullet_values(learning_log, ["下次新学习建议："])

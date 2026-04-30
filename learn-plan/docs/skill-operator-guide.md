@@ -140,7 +140,7 @@
 推荐启动配方：
 
 ```bash
-python3 "$HOME/.claude/skills/learn-plan/session_orchestrator.py" \
+python3 "$HOME/.claude/skills/learn-plan/learn-plan/session_orchestrator.py" \
   --session-type test \
   --test-mode general \
   --plan-path "<root>/learn-plan.md 或目的分析报告路径" \
@@ -195,10 +195,12 @@ python3 "$HOME/.claude/skills/learn-plan/session_orchestrator.py" \
 1. 确认学习根目录和 session 目录。
 2. 读取 `learn-plan.md`，默认不读 `PROJECT.md`。
 3. 做简短 check-in：真实进度、卡点、今日时间、复习/推进偏好。
-4. 调用 `session_orchestrator.py --session-type today`。
-5. 校验 session 四件套。
-6. 启动服务并打开浏览器。
-7. 简短输出关键路径、浏览器地址、停服命令。
+4. 在生成新课前做 1–3 个课前历史复习问题，并把结果写入当前 session 的 `progress.pre_session_review`；若复习不过，建议补强，但由用户决定继续新内容、先补强或缩小目标。
+5. 调用 `session_orchestrator.py --session-type today`。
+6. 校验 session 四件套。
+7. 启动服务并打开浏览器。
+8. 告知用户学习中可继续在终端提问、反馈难度/讲法/节奏，这些会通过 `learn_session_evidence_update.py` 记录到 `interaction_events.jsonl`。
+9. 简短输出关键路径、浏览器地址、停服命令。
 
 禁止：
 - 重写长期计划主体。
@@ -216,6 +218,7 @@ python3 "$HOME/.claude/skills/learn-plan/session_orchestrator.py" \
 4. 先生成 `question-scope.json`、`question-plan.json`、`question-artifact.json`、`question-review.json`，再调用 `session_orchestrator.py --session-type test --test-mode ...`。
 5. 校验 session 四件套。
 6. 启动服务并打开浏览器。
+7. 等待用户在终端明确说“做完了 / 可以更新了”后，才写入 completion signal、做评估性 reflection gate 并运行 update。
 
 禁止：
 - 缺 scope/plan/出题/审题 artifact 时静默 fallback 到确定性内容题或内置题库。
@@ -229,18 +232,25 @@ python3 "$HOME/.claude/skills/learn-plan/session_orchestrator.py" \
 
 执行器应：
 - 确认 today session 目录。
+- 确认用户已在终端给出 completion signal；没有完成信号时不得运行 update。
+- 基于答题结果、`interaction_events.jsonl`、`pre_session_review` 做教学性 reflection gate：1–3 个本质复盘问题，必要时追问 1–2 轮。
+- 用 `learn_session_evidence_update.py` 写入 `reflection.json`、`progress.mastery_judgement`、`mastery_checks.reflection` 和用户反馈摘要。
 - 在主流程内调用内部 `learn_today_update.py`。
 - 输出简短学习摘要。
-- 确认 `.learn-workflow/learner_model.json` 已更新。
+- 确认 `.learn-workflow/learner_model.json`、`.learn-workflow/session_facts.json` 已更新。
 - 若生成 patch，确认它只写入 `proposed` 或 `pending-evidence` 队列，不直接应用到正式计划主体。
+- 低风险微调应写入 `learn-plan.md` 的“当前教学/练习微调”。
 
 ## 7.2 `/learn-test` Step 4
 
 执行器应：
 - 确认 test session 目录。
+- 确认用户已在终端给出 completion signal；没有完成信号时不得运行 update。
+- 做评估性 reflection gate：少提示，优先确认本质解释、迁移和错因重构；提示后掌握不等同无提示掌握。
+- 用 `learn_session_evidence_update.py` 写入 `reflection.json`、`progress.mastery_judgement`、`mastery_checks.reflection` 和用户反馈摘要。
 - 在主流程内调用内部 `learn_test_update.py`。
 - 输出测试覆盖、薄弱项、是否回退/推进。
-- 确认 `.learn-workflow/learner_model.json` 与 `curriculum_patch_queue.json` 已更新。
+- 确认 `.learn-workflow/learner_model.json`、`.learn-workflow/session_facts.json` 与 `curriculum_patch_queue.json` 已更新。
 - 若生成 patch，确认它只写入 `proposed` 或 `pending-evidence` 队列，不直接应用。
 
 禁止：

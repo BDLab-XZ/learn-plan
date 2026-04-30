@@ -31,6 +31,15 @@ class LearnTodaySkillContractTest(unittest.TestCase):
         self.assertIn("question-review.json", text)
         self.assertIn("lesson-artifact.json", text)
         self.assertIn("source_trace", text)
+        for token in (
+            "pre_session_review",
+            "interaction_events.jsonl",
+            "completion_signal",
+            "reflection.json",
+            "learn_session_evidence_update.py",
+            "当前教学/练习微调",
+        ):
+            self.assertIn(token, text)
         self.assertNotIn("learn-today-YYYY-MM-DD.ipynb", text)
         self.assertNotIn("learn-today-YYYY-MM-DD.md", text)
 

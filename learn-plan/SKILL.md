@@ -180,13 +180,17 @@ learn-plan.md 必须能被 /learn-today 精确消费，包含：
 
 ## 2. 动态计划调整
 
-当 /learn-today 或 /learn-test 的复盘结果显示连续出现同类问题时，用户可要求微调计划，而不必重跑整套 /learn-plan。
+/learn-today 与 /learn-test 的 update 必须基于三层证据：performance evidence（答题表现）、interaction evidence（终端提问/误解/反馈/纠偏）、reflection evidence（用户明确完成后的复盘追问）。没有 completion signal 与 reflection evidence 时，不得把 covered scope 直接写入 mastered scope。
+
+调整分两层：
+1. **低风险微调**：题目难度、题型比例、讲解方式、节奏、例子风格、反馈方式等，可由 update 追加到 `learn-plan.md` 的“当前教学/练习微调”，供后续 `/learn-today` / `/learn-test` 默认采用。
+2. **结构性调整**：阶段顺序、阶段目标、主线材料、时间预算、学习频率等，必须进入 `.learn-workflow/curriculum_patch_queue.json`，保持 `application_policy=pending-user-approval`，用户确认后才改正式计划主体。
 
 调整流程（mini approval）：
-1. 说明需要调整什么（进度、资料、练习策略等）
-2. 给出调整建议和理由
-3. 用户确认后更新 learn-plan.md 的相关部分
-4. 不重跑 Phase 1-3
+1. update 先生成 patch candidate，并附 evidence、confidence、quality_review
+2. 主 agent 说明需要调整什么、原因、建议方案
+3. 用户确认或拒绝 proposed patch；pending-evidence 先补证据
+4. 只应用已批准 patch，不重跑 Phase 1-3
 
 ---
 

@@ -14,6 +14,8 @@ from learn_workflow.contracts import default_workflow_paths
 from learn_workflow.stage_review import review_stage_candidate
 from learn_workflow.workflow_store import resolve_learning_root
 from learn_feedback import (
+    append_micro_adjustments,
+    build_patch_proposal,
     build_session_facts,
     render_feedback_output_lines,
     update_learner_model_file,
@@ -38,6 +40,44 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--semantic-diagnostic-json", help="由外部 subagent 生成的 diagnostic semantic JSON 文件路径")
     parser.add_argument("--stdout-json", action="store_true", help="额外输出 JSON 摘要")
     return parser.parse_args()
+
+
+def completion_signal_received(progress: dict[str, Any]) -> bool:
+    signal = progress.get("completion_signal") if isinstance(progress.get("completion_signal"), dict) else {}
+    return signal.get("status") in {"received", "completed", "skipped_by_user"}
+
+
+def reflection_gate_completed(progress: dict[str, Any]) -> bool:
+    signal = progress.get("completion_signal") if isinstance(progress.get("completion_signal"), dict) else {}
+    if signal.get("status") == "skipped_by_user":
+        return False
+    if not completion_signal_received(progress):
+        return False
+    judgement = progress.get("mastery_judgement") if isinstance(progress.get("mastery_judgement"), dict) else {}
+    if str(judgement.get("status") or "").strip() not in {"", "unknown", "not_observed"}:
+        return True
+    mastery_checks = progress.get("mastery_checks") if isinstance(progress.get("mastery_checks"), dict) else {}
+    return bool(progress.get("reflection") or normalize_string_list(mastery_checks.get("reflection")))
+
+
+def mastery_gate(progress: dict[str, Any]) -> dict[str, Any]:
+    judgement = progress.get("mastery_judgement") if isinstance(progress.get("mastery_judgement"), dict) else {}
+    status = str(judgement.get("status") or "unknown").strip() or "unknown"
+    prompting_level = str(judgement.get("prompting_level") or "unknown").strip() or "unknown"
+    completion_received = completion_signal_received(progress)
+    reflection_completed = reflection_gate_completed(progress)
+    blocking_statuses = {"partial", "fragile", "blocked", "solid_after_intervention"}
+    return {
+        "completion_received": completion_received,
+        "reflection_completed": reflection_completed,
+        "status": status,
+        "prompting_level": prompting_level,
+        "mastery_level": judgement.get("mastery_level"),
+        "blocking_gaps": normalize_string_list(judgement.get("blocking_gaps")),
+        "next_session_reinforcement": normalize_string_list(judgement.get("next_session_reinforcement")),
+        "can_mark_mastered": bool(completion_received and reflection_completed and status == "mastered" and prompting_level in {"none", "unprompted", "unknown"}),
+        "blocks_advance": bool((not completion_received) or (not reflection_completed) or status in blocking_statuses),
+    }
 
 
 def summarize_mastery(progress: dict[str, Any], questions_data: dict[str, Any]) -> dict[str, Any]:
@@ -67,7 +107,8 @@ def summarize_mastery(progress: dict[str, Any], questions_data: dict[str, Any]) 
 
     target_reflection = normalize_string_list(mastery_targets.get("reflection"))
     recorded_reflection = normalize_string_list(mastery_checks.get("reflection"))
-    reflection_done = bool(recorded_reflection or reflection)
+    reflection_done = bool(recorded_reflection or reflection) and reflection_gate_completed(progress)
+    gate = mastery_gate(progress)
 
     return {
         "target_reading": target_reading,
@@ -83,6 +124,11 @@ def summarize_mastery(progress: dict[str, Any], questions_data: dict[str, Any]) 
         "recorded_reflection": recorded_reflection,
         "reflection_done": reflection_done,
         "reflection_text": reflection,
+        "completion_received": gate.get("completion_received"),
+        "reflection_gate_completed": gate.get("reflection_completed"),
+        "mastery_judgement_status": gate.get("status"),
+        "prompting_level": gate.get("prompting_level"),
+        "mastery_level": gate.get("mastery_level"),
         "artifacts": artifacts,
     }
 
@@ -99,6 +145,7 @@ def update_progress_state(progress: dict[str, Any], summary: dict[str, Any], *, 
     mastery = summary.get("mastery") or {}
 
     weaknesses = normalize_string_list(summary.get("weaknesses"))
+    evidence_gate_reasons = normalize_string_list(summary.get("evidence_gate_reasons"))
     next_actions = normalize_string_list(summary.get("next_actions"))
     covered_scope = normalize_string_list(summary.get("covered_scope"))
     attempted = normalize_int(summary.get("attempted"))
@@ -106,8 +153,17 @@ def update_progress_state(progress: dict[str, Any], summary: dict[str, Any], *, 
     active_cluster = str(context.get("topic_cluster") or plan_source.get("today_topic") or context.get("current_day") or context.get("current_stage") or summary.get("topic") or "").strip()
     test_started = attempted > 0
 
-    should_review = bool(test_started and (summary.get("should_review") or not mastery.get("reading_done") or not mastery.get("reflection_done")))
-    can_advance = bool(test_started and summary.get("can_advance") and mastery.get("reading_done") and mastery.get("reflection_done"))
+    gate = mastery_gate(updated)
+    gated_review_debt = normalize_string_list(
+        gate.get("blocking_gaps")
+        + gate.get("next_session_reinforcement")
+        + evidence_gate_reasons
+        + (["缺少用户完成信号"] if not gate.get("completion_received") else [])
+        + (["缺少 update 前测试复盘证据"] if not gate.get("reflection_completed") else [])
+    )
+    should_review = bool(test_started and (summary.get("should_review") or not mastery.get("reading_done") or not mastery.get("reflection_done") or gated_review_debt or gate.get("blocks_advance")))
+    can_advance = bool(test_started and summary.get("can_advance") and mastery.get("reading_done") and mastery.get("reflection_done") and not gate.get("blocks_advance"))
+    mastered_additions = covered_scope if gate.get("can_mark_mastered") and can_advance else []
 
     learning_state.update(
         {
@@ -127,8 +183,8 @@ def update_progress_state(progress: dict[str, Any], summary: dict[str, Any], *, 
         {
             "stage_status": "planned" if not test_started else ("blocked_by_review" if should_review else ("ready_to_advance" if can_advance else "in_progress")),
             "day_status": "planned" if not test_started else ("completed_with_gaps" if should_review else "completed"),
-            "review_debt": weaknesses if test_started else [],
-            "mastered_clusters": normalize_string_list(list(progression.get("mastered_clusters") or []) + list(summary.get("covered_scope") or [] if can_advance else [])),
+            "review_debt": normalize_string_list(weaknesses + gated_review_debt) if test_started else [],
+            "mastered_clusters": normalize_string_list(list(progression.get("mastered_clusters") or []) + mastered_additions),
             "active_clusters": normalize_string_list(([active_cluster] if active_cluster else []) + list(progression.get("active_clusters") or [])),
             "deferred_clusters": normalize_string_list(list(progression.get("deferred_clusters") or []) + (weaknesses if should_review else [])),
             "updated_at": summary.get("finished_at") or summary.get("date"),
@@ -322,8 +378,25 @@ def summarize_test_progress(progress: dict[str, Any], questions_data: dict[str, 
     overall = str(semantic_review.get("overall") or "").strip() if semantic_valid else ""
     weaknesses = normalize_string_list(semantic_review.get("weaknesses") if semantic_valid else [])
     next_actions = normalize_string_list(semantic_review.get("next_actions") if semantic_valid else [])
+    gate = mastery_gate(progress)
+    gate_review_reasons: list[str] = []
+    if not gate.get("completion_received"):
+        gate_review_reasons.append("缺少用户完成信号")
+    if not gate.get("reflection_completed"):
+        gate_review_reasons.append("缺少 update 前测试复盘证据")
+    mastery_status = str(gate.get("status") or "unknown")
+    if mastery_status in {"partial", "fragile", "blocked", "solid_after_intervention"}:
+        gate_review_reasons.append(f"测试掌握判断为 {mastery_status}")
+    for gap in gate.get("blocking_gaps") or []:
+        gate_review_reasons.append(str(gap))
+    for reinforcement in gate.get("next_session_reinforcement") or []:
+        gate_review_reasons.append(str(reinforcement))
+
     should_review = bool(semantic_review.get("should_review")) if semantic_valid else False
+    if gate_review_reasons:
+        should_review = True
     can_advance = bool(semantic_review.get("can_advance")) if semantic_valid else False
+    can_advance = bool(can_advance and not gate.get("blocks_advance"))
     review_decision = str(semantic_review.get("review_decision") or "").strip() if semantic_valid else "缺少 semantic review artifact"
     advance_decision = str(semantic_review.get("advance_decision") or "").strip() if semantic_valid else "缺少 semantic review artifact"
 
@@ -346,6 +419,7 @@ def summarize_test_progress(progress: dict[str, Any], questions_data: dict[str, 
         "semantic_review": semantic_review if semantic_valid else {},
         "covered_scope": covered_scope[:4],
         "weaknesses": weaknesses,
+        "evidence_gate_reasons": normalize_string_list(gate_review_reasons),
         "should_review": should_review,
         "can_advance": can_advance,
         "review_decision": review_decision,
@@ -356,6 +430,7 @@ def summarize_test_progress(progress: dict[str, Any], questions_data: dict[str, 
         "mastery": mastery,
         "blocking_weaknesses": weaknesses[:2] if semantic_valid else [],
         "deferred_enhancement": normalize_string_list(semantic_review.get("deferred_enhancement") if semantic_valid else []),
+        "user_feedback": progress.get("user_feedback") if isinstance(progress.get("user_feedback"), dict) else {},
     }
 
 
@@ -399,6 +474,7 @@ def update_learn_plan(plan_path: Path, summary: dict[str, Any], session_dir: Pat
     block = render_log_entry(summary, session_dir)
     updated = upsert_section(original, "测试记录", block)
     write_text(plan_path, updated)
+    append_micro_adjustments(plan_path, summary)
 
 
 def update_project_log(project_path: Path, summary: dict[str, Any], session_dir: Path) -> None:
@@ -415,7 +491,8 @@ def write_feedback_artifacts(plan_path: Path, summary: dict[str, Any], progress:
     paths = default_workflow_paths(resolve_learning_root(plan_path), plan_path, plan_path.parent / "materials" / "index.json")
     write_json(paths["session_facts_json"], session_facts)
     learner_model = update_learner_model_file(plan_path, summary, session_facts, update_type="test")
-    patch_queue = update_patch_queue_file(plan_path, summary, session_facts, update_type="test")
+    patch_candidate = build_patch_proposal(summary, session_facts, update_type="test")
+    patch_queue = update_patch_queue_file(plan_path, summary, session_facts, update_type="test", patch_candidate=patch_candidate)
     return {
         "session_facts": session_facts,
         "learner_model": learner_model,

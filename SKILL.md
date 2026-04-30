@@ -34,8 +34,10 @@ $HOME/.claude/skills/learn-plan/learn-plan
 | `/learn-test` | 阶段测试：出题 + 测试 + 复盘，测完自动更新 learner model |
 
 更新回写已收口到主流程：
-- 今日学习复盘 → `/learn-today` Step 6
-- 测试复盘 → `/learn-test` Step 4
+- 今日学习复盘 → `/learn-today` Step 6：用户明确完成后，先写 `completion_signal` 与 `reflection.json`，再运行 update
+- 测试复盘 → `/learn-test` Step 7：评估性复盘先于 update，提示后掌握不等同阶段通过
+
+学习过程证据由主 agent 管理：课前复习写入 `progress.pre_session_review`，学习中终端交互写入 `interaction_events.jsonl`，复盘追问写入 `reflection.json`。低风险偏好微调写入 `learn-plan.md` 的“当前教学/练习微调”；结构性计划变化进入 `.learn-workflow/curriculum_patch_queue.json` 等待用户确认。
 
 以下工具入口仍保留：
 - `/learn-download-materials` → 独立材料缓存维护工具；日常流程中也会在 `/learn-plan` Phase 3 自动触发一次

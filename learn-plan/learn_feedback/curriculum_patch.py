@@ -270,7 +270,7 @@ def validate_patch_proposal(patch: dict[str, Any]) -> list[str]:
         issues.append("patch.generation_trace_missing")
     if not normalize_string_list(patch.get("traceability") or []):
         issues.append("patch.traceability_missing")
-    if not patch.get("evidence"):
+    if not patch.get("evidence") and patch_status(patch.get("status")) != "pending-evidence":
         issues.append("patch.evidence_missing")
     if patch.get("application_policy") != "pending-user-approval":
         issues.append("patch.must_wait_for_user_approval")
@@ -328,9 +328,6 @@ def build_patch_proposal(summary: dict[str, Any], session_facts: dict[str, Any],
         },
         "application_policy": "pending-user-approval",
     }
-    quality_issues = validate_patch_proposal(patch)
-    if quality_issues and patch["status"] == "proposed":
-        patch["status"] = "pending-evidence"
     traceability = list(session_facts.get("traceability") or [])
     traceability.append(
         build_traceability_entry(
@@ -342,21 +339,42 @@ def build_patch_proposal(summary: dict[str, Any], session_facts: dict[str, Any],
             status=patch["status"],
         )
     )
+    patch["traceability"] = traceability
+    patch["generation_trace"] = {
+        "stage": "feedback",
+        "generator": "curriculum-patch",
+        "status": patch["status"],
+        "update_type": update_type,
+    }
+    patch["quality_review"] = {
+        "reviewer": "deterministic-feedback-gate",
+        "valid": True,
+        "issues": [],
+        "warnings": [],
+        "confidence": patch.get("confidence"),
+        "evidence_adequacy": "sufficient" if evidence else "partial",
+        "verdict": "ready",
+    }
+    quality_issues = validate_patch_proposal(patch)
+    if quality_issues and patch["status"] == "proposed":
+        patch["status"] = "pending-evidence"
+        patch["generation_trace"]["status"] = patch["status"]
+    patch["quality_review"] = {
+        "reviewer": "deterministic-feedback-gate",
+        "valid": not quality_issues,
+        "issues": quality_issues,
+        "warnings": [],
+        "confidence": patch.get("confidence"),
+        "evidence_adequacy": "sufficient" if evidence else "partial",
+        "verdict": "ready" if not quality_issues else "needs-revision",
+    }
     return apply_quality_envelope(
         patch,
         stage="feedback",
         generator="curriculum-patch",
         evidence=evidence,
         confidence=patch.get("confidence"),
-        quality_review={
-            "reviewer": "deterministic-feedback-gate",
-            "valid": not quality_issues,
-            "issues": quality_issues,
-            "warnings": [],
-            "confidence": patch.get("confidence"),
-            "evidence_adequacy": "sufficient" if evidence else "partial",
-            "verdict": "ready" if not quality_issues else "needs-revision",
-        },
+        quality_review=patch["quality_review"],
         generation_trace={
             "stage": "feedback",
             "generator": "curriculum-patch",

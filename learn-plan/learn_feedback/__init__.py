@@ -26,8 +26,18 @@ from .learner_model import (
     update_learner_model_from_summary,
     write_learner_model,
 )
-from .plan_update_renderer import append_plan_record, render_feedback_output_lines
-from .progress_summary import build_session_evidence, build_session_facts
+from .plan_update_renderer import append_micro_adjustments, append_plan_record, build_micro_adjustment_lines, render_feedback_output_lines
+from .progress_summary import (
+    build_completion_signal_facts,
+    build_interaction_event_facts,
+    build_interaction_evidence_facts,
+    build_mastery_judgement_facts,
+    build_pre_session_review_facts,
+    build_reflection_facts,
+    build_session_evidence,
+    build_session_facts,
+    build_user_feedback_facts,
+)
 from .update_history import append_update_history
 
 __all__ = [
@@ -36,14 +46,23 @@ __all__ = [
     "LEARNER_MODEL_SCHEMA",
     "PATCH_QUEUE_SCHEMA",
     "PENDING_PATCH_STATUSES",
+    "append_micro_adjustments",
     "append_plan_record",
+    "build_micro_adjustment_lines",
     "apply_approval_patch_decisions",
     "append_unique",
     "append_update_history",
     "approved_patch_items",
+    "build_completion_signal_facts",
+    "build_interaction_event_facts",
+    "build_interaction_evidence_facts",
+    "build_mastery_judgement_facts",
     "build_patch_proposal",
+    "build_pre_session_review_facts",
+    "build_reflection_facts",
     "build_session_evidence",
     "build_session_facts",
+    "build_user_feedback_facts",
     "consume_approved_patches",
     "default_learner_model",
     "default_patch_queue",

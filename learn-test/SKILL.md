@@ -13,6 +13,10 @@ description: 基于学习进度和历史生成阶段测试，启动测试 sessio
 2. **四步出题协议**：先生成 `question-scope.json`，再生成 `question-plan.json`，再生成 `question-artifact.json`，最后由独立审题 Agent 生成 `question-review.json`。
 3. **test 不依赖 lesson artifact**：测试 session 不要求 `lesson-html-json` 或 `lesson-artifact-json`；初始测试从目的分析报告提炼 scope，历史阶段测试从 learn-plan.md、progress.json 和 learner_model 提炼 scope。
 4. **复盘要具体**：不说"加强练习"，而是说"重新读 XX 资料第 Y 章第 Z 节"。
+5. **完成信号后才复盘**：用户完成网页测试后，必须先在终端明确反馈“做完了 / 可以更新了”，再记录 `completion_signal` 并进入 update 前评估性复盘。
+6. **复盘先于更新**：`learn_test_update.py` 必须在 completion signal 与 `reflection.json` 写入后运行；缺少 completion/reflection 时不能把测试覆盖范围直接判为 mastered 或阶段通过。
+7. **评估性复盘少提示**：test reflection 主要判断真实掌握，提示后掌握不等同于无提示掌握，不能直接作为阶段通过依据。
+8. **反馈分层处理**：测试中的难度、题型、节奏或讲解反馈写入 `user_feedback`；低风险微调可落到 `learn-plan.md` 的“当前教学/练习微调”，结构性变化进入 `curriculum_patch_queue.json` 审批。
 
 ---
 
@@ -37,8 +41,9 @@ description: 基于学习进度和历史生成阶段测试，启动测试 sessio
     → Step 4: 生成题目（question-artifact.json）
     → Step 5: 审题（question-review.json）
     → Step 6: 组装 session 并启动
-    → Step 7: 测试后复盘（含测试记录回写）
-    → 更新 learn-plan.md 和 learner_model
+    → Step 6.5: 用户完成网页测试后，在终端给出 completion_signal
+    → Step 7: 测试后评估性复盘（reflection.json，含测试记录回写）
+    → 更新 learn-plan.md、learner_model 和 patch queue
 ```
 
 ---
@@ -89,7 +94,7 @@ description: 基于学习进度和历史生成阶段测试，启动测试 sessio
 ## 5. Step 6：组装 session 并启动
 
 ```bash
-python3 "$HOME/.claude/skills/learn-plan/session_orchestrator.py" \
+python3 "$HOME/.claude/skills/learn-plan/learn-plan/session_orchestrator.py" \
   --session-dir "<session目录>" \
   --topic "<学习主题>" \
   --plan-path "<learn-plan.md路径或目的分析报告路径>" \
@@ -107,19 +112,22 @@ python3 "$HOME/.claude/skills/learn-plan/session_orchestrator.py" \
 
 ## 6. Step 7：测试后复盘
 
-用户完成测试后，读取 progress.json，分析结果。
+用户完成网页测试后，不能立即运行 update。必须先等待用户在终端明确反馈“做完了 / 可以更新了”，用 `learn_session_evidence_update.py` 写入 `completion_signal`，再读取 `progress.json` 分析结果并进入评估性复盘。
 
 ### 6.1 复盘内容
 
-向用户展示（终端简短输出）：
+先问 1–3 个评估性复盘问题，必要时追问 1–2 轮，聚焦阶段目标、错因重构、本质解释和迁移判断。test 复盘少提示；如果需要提示才答出，记录为 `solid_after_intervention` 或 `partial`，不得等同于无提示 mastered。复盘结果写入 `reflection.json`、`progress.mastery_judgement` 与 `progress.mastery_checks.reflection`。
+
+复盘后向用户展示（终端简短输出）：
 
 1. **测试概况**：覆盖范围、总题数、正确率、与上次测试对比
 2. **薄弱维度**：按能力维度归类的表现，哪些维度达标、哪些不达标
-3. **具体建议**：
+3. **复盘掌握判断**：无提示 mastered、提示后掌握、partial、fragile 还是 blocked
+4. **具体建议**：
    - 推荐重读哪些资料的哪一部分（具体到章节/页面）
    - 推荐回炉哪些练习
    - 是否可以进入下一阶段
-4. **动态调整建议**（如适用）：是否建议微调计划
+5. **动态调整建议**（如适用）：是否建议微调计划
 
 ### 6.2 更新 learn-plan.md
 
@@ -138,7 +146,7 @@ python3 "$HOME/.claude/skills/learn-plan/session_orchestrator.py" \
 
 ### 6.4 触发动态调整（如需要）
 
-如果测试暴露了明显的起点偏差或进度问题，主动提示用户是否需要微调计划（走 mini approval 流程）。
+如果测试暴露了明显的起点偏差或进度问题，生成 patch candidate 写入 `curriculum_patch_queue.json`，保持 `application_policy=pending-user-approval`。低风险微调（难度、题型比例、讲解方式、节奏、例子风格、反馈方式）可写入 `learn-plan.md` 的“当前教学/练习微调”；阶段顺序、目标、材料、时间预算等结构性修改必须等用户审批。
 
 ---
 

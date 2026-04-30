@@ -28,6 +28,13 @@ class LearnTestSkillContractTest(unittest.TestCase):
             "--question-plan-json",
             "--question-artifact-json",
             "--question-review-json",
+            "completion_signal",
+            "reflection.json",
+            "learn_session_evidence_update.py",
+            "当前教学/练习微调",
+            "Step 7",
+            "测试后复盘",
+            "回写",
         ):
             self.assertIn(token, text)
 

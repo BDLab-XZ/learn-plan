@@ -12,8 +12,11 @@ from typing import Any
 from learn_core.io import read_json, read_text_if_exists, write_json, write_text
 from learn_core.markdown_sections import upsert_markdown_section
 from learn_core.text_utils import normalize_int, normalize_string_list
+from learn_workflow.contracts import default_workflow_paths
+from learn_workflow.workflow_store import resolve_learning_root
 
 from . import (
+    build_patch_proposal,
     build_session_facts,
     render_feedback_output_lines,
     update_learner_model_file,
@@ -277,8 +280,11 @@ def update_learn_plan_with_diagnostic(plan_path: Path, summary: dict[str, Any], 
 
 def write_feedback_artifacts(plan_path: Path, summary: dict[str, Any], progress: dict[str, Any], session_dir: Path, *, update_type: str) -> dict[str, Any]:
     session_facts = build_session_facts(progress, summary, session_dir=session_dir, update_type=update_type)
+    paths = default_workflow_paths(resolve_learning_root(plan_path), plan_path, plan_path.parent / "materials" / "index.json")
+    write_json(paths["session_facts_json"], session_facts)
     learner_model = update_learner_model_file(plan_path, summary, session_facts, update_type=update_type)
-    patch_queue = update_patch_queue_file(plan_path, summary, session_facts, update_type=update_type, patch_candidate=None)
+    patch_candidate = build_patch_proposal(summary, session_facts, update_type=update_type)
+    patch_queue = update_patch_queue_file(plan_path, summary, session_facts, update_type=update_type, patch_candidate=patch_candidate)
     return {
         "session_facts": session_facts,
         "learner_model": learner_model,

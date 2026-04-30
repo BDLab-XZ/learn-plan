@@ -48,6 +48,29 @@ class RuntimeDocsTest(unittest.TestCase):
         self.assertIn("测试后复盘", test)
         self.assertIn("回写", test)
 
+    def test_entrypoints_define_agent_evidence_workflow(self) -> None:
+        docs = {
+            "learn-today/SKILL.md": SKILL_DIR.parent / "learn-today" / "SKILL.md",
+            "learn-test/SKILL.md": SKILL_DIR.parent / "learn-test" / "SKILL.md",
+            "skill-operator-guide.md": SKILL_DIR / "docs" / "skill-operator-guide.md",
+            "state-files.md": SKILL_DIR / "docs" / "state-files.md",
+            "contracts.md": SKILL_DIR / "docs" / "contracts.md",
+            "runtime-compatibility.md": SKILL_DIR / "docs" / "runtime-compatibility.md",
+        }
+        combined = "\n".join(path.read_text(encoding="utf-8") for path in docs.values())
+
+        for token in (
+            "pre_session_review",
+            "interaction_events.jsonl",
+            "reflection.json",
+            "completion_signal",
+            "mastery_judgement",
+            "learn_session_evidence_update.py",
+            "当前教学/练习微调",
+            "pending-user-approval",
+        ):
+            self.assertIn(token, combined)
+
     def test_docs_define_selective_subagent_strategy(self) -> None:
         docs = {
             "learn-plan/SKILL.md": SKILL_DIR / "SKILL.md",

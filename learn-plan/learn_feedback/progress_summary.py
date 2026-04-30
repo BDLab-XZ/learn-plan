@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -80,6 +81,219 @@ def build_coverage_ledger_facts(progress: dict[str, Any], summary: dict[str, Any
     return result
 
 
+def _read_json_if_exists(path: Path) -> dict[str, Any]:
+    if not path.exists() or not path.is_file():
+        return {}
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            payload = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _read_jsonl_objects(path: Path) -> list[dict[str, Any]]:
+    if not path.exists() or not path.is_file():
+        return []
+    rows: list[dict[str, Any]] = []
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            for line in f:
+                text = line.strip()
+                if not text:
+                    continue
+                payload = json.loads(text)
+                if isinstance(payload, dict):
+                    rows.append(payload)
+    except (OSError, json.JSONDecodeError):
+        return rows
+    return rows
+
+
+def build_pre_session_review_facts(progress: dict[str, Any]) -> dict[str, Any]:
+    review = progress.get("pre_session_review") if isinstance(progress.get("pre_session_review"), dict) else {}
+    if not review:
+        return {}
+    return {
+        "status": review.get("status"),
+        "passed": review.get("passed"),
+        "result": review.get("result"),
+        "reviewed_items": normalize_string_list(review.get("reviewed_items")),
+        "weak_points": normalize_string_list(review.get("weak_points")),
+        "user_decision": review.get("user_decision"),
+        "next_step": review.get("next_step"),
+        "evidence": normalize_string_list(review.get("evidence")),
+    }
+
+
+def build_completion_signal_facts(progress: dict[str, Any], session_dir: Path | None = None) -> dict[str, Any]:
+    signal = progress.get("completion_signal") if isinstance(progress.get("completion_signal"), dict) else {}
+    if not signal:
+        return {}
+    return {
+        "status": signal.get("status"),
+        "source": signal.get("source"),
+        "received_at": signal.get("received_at"),
+        "user_message_summary": signal.get("user_message_summary"),
+        "session_dir": str(session_dir) if session_dir else None,
+    }
+
+
+def build_interaction_evidence_facts(progress: dict[str, Any]) -> list[dict[str, Any]]:
+    facts: list[dict[str, Any]] = []
+    for item in progress.get("interaction_evidence") or []:
+        if not isinstance(item, dict):
+            continue
+        facts.append(
+            {
+                "timestamp": item.get("timestamp"),
+                "phase": item.get("phase"),
+                "type": item.get("type"),
+                "summary": item.get("summary"),
+                "knowledge_points": normalize_string_list(item.get("knowledge_points")),
+                "confusion_type": item.get("confusion_type"),
+                "severity": item.get("severity"),
+                "follow_up_status": item.get("follow_up_status"),
+                "prompting_level": item.get("prompting_level"),
+                "recommended_action": item.get("recommended_action"),
+            }
+        )
+    return facts
+
+
+def build_interaction_event_facts(session_dir: Path, progress: dict[str, Any]) -> list[dict[str, Any]]:
+    events = _read_jsonl_objects(session_dir / "interaction_events.jsonl")
+    facts: list[dict[str, Any]] = []
+    for event in events:
+        user_event = event.get("user_event") if isinstance(event.get("user_event"), dict) else {}
+        diagnostic = event.get("diagnostic_signal") if isinstance(event.get("diagnostic_signal"), dict) else {}
+        follow_up = event.get("follow_up_result") if isinstance(event.get("follow_up_result"), dict) else {}
+        facts.append(
+            {
+                "timestamp": event.get("timestamp"),
+                "session_type": event.get("session_type"),
+                "phase": event.get("phase"),
+                "source": event.get("source"),
+                "event_type": user_event.get("type"),
+                "summary": user_event.get("summary"),
+                "knowledge_points": normalize_string_list(event.get("knowledge_points")),
+                "confusion_type": diagnostic.get("confusion_type"),
+                "severity": diagnostic.get("severity"),
+                "follow_up_status": follow_up.get("status"),
+                "prompting_level": follow_up.get("prompting_level"),
+                "recommended_action": event.get("recommended_action"),
+            }
+        )
+    existing_summaries = {str(item.get("summary") or "").strip() for item in facts}
+    for item in build_interaction_evidence_facts(progress):
+        summary = str(item.get("summary") or "").strip()
+        if summary and summary in existing_summaries:
+            continue
+        facts.append(item)
+    return facts
+
+
+def build_reflection_facts(progress: dict[str, Any], summary: dict[str, Any], session_dir: Path | None = None) -> dict[str, Any]:
+    reflection = _read_json_if_exists(session_dir / "reflection.json") if session_dir else {}
+    progress_judgement = progress.get("mastery_judgement") if isinstance(progress.get("mastery_judgement"), dict) else {}
+    if not reflection and not progress_judgement and not progress.get("reflection"):
+        return {}
+    judgement = reflection.get("mastery_judgement") if isinstance(reflection.get("mastery_judgement"), dict) else progress_judgement
+    rounds = reflection.get("rounds") if isinstance(reflection.get("rounds"), list) else []
+    return {
+        "status": reflection.get("status") or ("recorded" if progress.get("reflection") else None),
+        "trigger": reflection.get("trigger") if isinstance(reflection.get("trigger"), dict) else {},
+        "round_count": len(rounds),
+        "rounds": [
+            {
+                "round_index": item.get("round_index"),
+                "question_type": item.get("question_type"),
+                "knowledge_points": normalize_string_list(item.get("knowledge_points")),
+                "result": item.get("result"),
+                "prompting_level": item.get("prompting_level"),
+            }
+            for item in rounds
+            if isinstance(item, dict)
+        ],
+        "summary": progress.get("reflection") or summary.get("reflection"),
+        "mastery_judgement": judgement if isinstance(judgement, dict) else {},
+        "learning_path_evidence": normalize_string_list(reflection.get("learning_path_evidence")),
+        "review_debt": normalize_string_list(reflection.get("review_debt")),
+    }
+
+
+def build_user_feedback_facts(progress: dict[str, Any]) -> dict[str, Any]:
+    feedback = progress.get("user_feedback") if isinstance(progress.get("user_feedback"), dict) else {}
+    if not feedback:
+        return {}
+    return {
+        "difficulty": feedback.get("difficulty"),
+        "teaching_style": feedback.get("teaching_style"),
+        "pace": feedback.get("pace"),
+        "question_design": feedback.get("question_design"),
+        "material_fit": feedback.get("material_fit"),
+        "scope": feedback.get("scope") or "session",
+        "comments": normalize_string_list(feedback.get("comments")),
+    }
+
+
+def build_mastery_judgement_facts(progress: dict[str, Any]) -> dict[str, Any]:
+    judgement = progress.get("mastery_judgement") if isinstance(progress.get("mastery_judgement"), dict) else {}
+    if not judgement:
+        return {}
+    return {
+        "status": judgement.get("status"),
+        "confidence": judgement.get("confidence"),
+        "mastery_level": judgement.get("mastery_level"),
+        "prompting_level": judgement.get("prompting_level"),
+        "evidence": normalize_string_list(judgement.get("evidence")),
+        "blocking_gaps": normalize_string_list(judgement.get("blocking_gaps")),
+        "next_session_reinforcement": normalize_string_list(judgement.get("next_session_reinforcement")),
+    }
+
+
+def build_agent_evidence_lines(
+    *,
+    pre_session_review_facts: dict[str, Any],
+    completion_signal_facts: dict[str, Any],
+    interaction_event_facts: list[dict[str, Any]],
+    reflection_facts: dict[str, Any],
+    user_feedback_facts: dict[str, Any],
+    mastery_judgement_facts: dict[str, Any],
+) -> list[str]:
+    evidence: list[str] = []
+    if pre_session_review_facts:
+        status = pre_session_review_facts.get("status") or "recorded"
+        result = pre_session_review_facts.get("result") or "unknown"
+        evidence.append(f"课前复习：status={status}，result={result}，passed={pre_session_review_facts.get('passed')}")
+        for weak_point in normalize_string_list(pre_session_review_facts.get("weak_points"))[:3]:
+            evidence.append(f"课前复习薄弱点：{weak_point}")
+    if completion_signal_facts:
+        evidence.append(f"完成信号：status={completion_signal_facts.get('status')}，source={completion_signal_facts.get('source')}")
+    for item in interaction_event_facts[:6]:
+        summary = str(item.get("summary") or "").strip()
+        event_type = str(item.get("event_type") or item.get("type") or "interaction").strip()
+        if summary:
+            evidence.append(f"学习交互：{event_type}，{summary}")
+        if item.get("confusion_type"):
+            evidence.append(f"交互诊断：confusion={item.get('confusion_type')}，severity={item.get('severity')}")
+    if reflection_facts:
+        judgement = reflection_facts.get("mastery_judgement") if isinstance(reflection_facts.get("mastery_judgement"), dict) else {}
+        evidence.append(
+            f"复盘：status={reflection_facts.get('status')}，rounds={normalize_int(reflection_facts.get('round_count'))}，mastery={judgement.get('status')}"
+        )
+    if user_feedback_facts:
+        for key in ("difficulty", "teaching_style", "pace", "question_design", "material_fit"):
+            value = user_feedback_facts.get(key)
+            if value:
+                evidence.append(f"用户反馈：{key}={value}")
+    if mastery_judgement_facts and mastery_judgement_facts.get("status"):
+        evidence.append(
+            f"掌握判断：status={mastery_judgement_facts.get('status')}，level={mastery_judgement_facts.get('mastery_level')}，prompting={mastery_judgement_facts.get('prompting_level')}"
+        )
+    return normalize_string_list(evidence)
+
+
 def build_session_facts(
     progress: dict[str, Any],
     summary: dict[str, Any],
@@ -94,10 +308,27 @@ def build_session_facts(
     submission_behavior_facts = build_submission_behavior_facts(progress)
     coverage_ledger_facts = build_coverage_ledger_facts(progress, summary)
     difficulty_performance_facts = build_difficulty_performance_facts(progress)
+    pre_session_review_facts = build_pre_session_review_facts(progress)
+    completion_signal_facts = build_completion_signal_facts(progress, session_dir=session_dir)
+    interaction_event_facts = build_interaction_event_facts(session_dir, progress)
+    interaction_facts = build_interaction_evidence_facts(progress)
+    reflection_facts = build_reflection_facts(progress, summary, session_dir=session_dir)
+    user_feedback_facts = build_user_feedback_facts(progress)
+    mastery_judgement_facts = build_mastery_judgement_facts(progress)
     evidence.extend(build_code_failure_evidence(code_failure_facts))
     evidence.extend(build_submission_behavior_evidence(submission_behavior_facts))
     evidence.extend(build_difficulty_performance_evidence(difficulty_performance_facts))
-    evidence = normalize_string_list(evidence)[:20]
+    evidence.extend(
+        build_agent_evidence_lines(
+            pre_session_review_facts=pre_session_review_facts,
+            completion_signal_facts=completion_signal_facts,
+            interaction_event_facts=interaction_event_facts,
+            reflection_facts=reflection_facts,
+            user_feedback_facts=user_feedback_facts,
+            mastery_judgement_facts=mastery_judgement_facts,
+        )
+    )
+    evidence = normalize_string_list(evidence)[:30]
     facts = {
         "schema": "learn-plan.session-facts.v1",
         "update_type": update_type,
@@ -138,6 +369,20 @@ def build_session_facts(
         facts["coverage_ledger_facts"] = coverage_ledger_facts
     if difficulty_performance_facts:
         facts["difficulty_performance_facts"] = difficulty_performance_facts
+    if pre_session_review_facts:
+        facts["pre_session_review_facts"] = pre_session_review_facts
+    if completion_signal_facts:
+        facts["completion_signal_facts"] = completion_signal_facts
+    if interaction_event_facts:
+        facts["interaction_event_facts"] = interaction_event_facts
+    if interaction_facts:
+        facts["interaction_facts"] = interaction_facts
+    if reflection_facts:
+        facts["reflection_facts"] = reflection_facts
+    if user_feedback_facts:
+        facts["user_feedback_facts"] = user_feedback_facts
+    if mastery_judgement_facts:
+        facts["mastery_judgement_facts"] = mastery_judgement_facts
     if update_type == "today":
         facts["today_context"] = {
             "session_theme": summary.get("session_theme"),
@@ -520,6 +765,13 @@ def build_session_evidence(summary: dict[str, Any]) -> list[str]:
 __all__ = [
     "build_session_evidence",
     "build_session_facts",
+    "build_pre_session_review_facts",
+    "build_completion_signal_facts",
+    "build_interaction_event_facts",
+    "build_interaction_evidence_facts",
+    "build_reflection_facts",
+    "build_user_feedback_facts",
+    "build_mastery_judgement_facts",
     "build_submission_behavior_facts",
     "build_coverage_ledger_facts",
     "build_difficulty_performance_facts",

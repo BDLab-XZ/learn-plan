@@ -132,6 +132,44 @@
   },
   "artifacts": [],
   "reflection": null,
+  "pre_session_review": {
+    "status": "not_started",
+    "reviewed_items": [],
+    "questions": [],
+    "user_answers": [],
+    "result": "unknown",
+    "passed": null,
+    "weak_points": [],
+    "agent_assessment": null,
+    "user_decision": null,
+    "next_step": null,
+    "evidence": []
+  },
+  "interaction_evidence": [],
+  "user_feedback": {
+    "difficulty": null,
+    "teaching_style": null,
+    "pace": null,
+    "question_design": null,
+    "material_fit": null,
+    "comments": [],
+    "scope": "session"
+  },
+  "mastery_judgement": {
+    "status": "unknown",
+    "confidence": 0.0,
+    "evidence": [],
+    "blocking_gaps": [],
+    "next_session_reinforcement": [],
+    "prompting_level": "unknown",
+    "mastery_level": "not_observed"
+  },
+  "completion_signal": {
+    "status": "not_received",
+    "source": null,
+    "received_at": null,
+    "user_message_summary": null
+  },
   "learning_state": {
     "overall": "未开始",
     "review_focus": [],

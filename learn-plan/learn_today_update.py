@@ -10,6 +10,7 @@ from learn_core.io import read_json, read_text_if_exists, write_json, write_text
 from learn_core.markdown_sections import upsert_markdown_section
 from learn_core.text_utils import normalize_int, normalize_string_list
 from learn_feedback import (
+    append_micro_adjustments,
     build_session_facts,
     render_feedback_output_lines,
     update_learner_model_file,
@@ -36,6 +37,47 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--semantic-diagnostic-json", help="由外部 subagent 生成的 diagnostic semantic JSON 文件路径")
     parser.add_argument("--stdout-json", action="store_true", help="额外输出 JSON 摘要")
     return parser.parse_args()
+
+
+def completion_signal_received(progress: dict[str, Any]) -> bool:
+    signal = progress.get("completion_signal") if isinstance(progress.get("completion_signal"), dict) else {}
+    return signal.get("status") in {"received", "completed", "skipped_by_user"}
+
+
+def reflection_gate_completed(progress: dict[str, Any]) -> bool:
+    signal = progress.get("completion_signal") if isinstance(progress.get("completion_signal"), dict) else {}
+    if signal.get("status") == "skipped_by_user":
+        return False
+    if not completion_signal_received(progress):
+        return False
+    judgement = progress.get("mastery_judgement") if isinstance(progress.get("mastery_judgement"), dict) else {}
+    if str(judgement.get("status") or "").strip() not in {"", "unknown", "not_observed"}:
+        return True
+    mastery_checks = progress.get("mastery_checks") if isinstance(progress.get("mastery_checks"), dict) else {}
+    return bool(progress.get("reflection") or normalize_string_list(mastery_checks.get("reflection")))
+
+
+def mastery_gate(progress: dict[str, Any]) -> dict[str, Any]:
+    judgement = progress.get("mastery_judgement") if isinstance(progress.get("mastery_judgement"), dict) else {}
+    status = str(judgement.get("status") or "unknown").strip() or "unknown"
+    prompting_level = str(judgement.get("prompting_level") or "unknown").strip() or "unknown"
+    completion_received = completion_signal_received(progress)
+    reflection_completed = reflection_gate_completed(progress)
+    blocking_statuses = {"partial", "fragile", "blocked"}
+    strong_statuses = {"mastered", "solid_after_intervention"}
+    return {
+        "completion_received": completion_received,
+        "reflection_completed": reflection_completed,
+        "status": status,
+        "prompting_level": prompting_level,
+        "mastery_level": judgement.get("mastery_level"),
+        "blocking_gaps": normalize_string_list(judgement.get("blocking_gaps")),
+        "next_session_reinforcement": normalize_string_list(judgement.get("next_session_reinforcement")),
+        "can_mark_mastered": bool(completion_received and reflection_completed and status == "mastered" and prompting_level in {"none", "unprompted", "unknown"}),
+        "can_advance_with_review": bool(completion_received and reflection_completed and status == "solid_after_intervention"),
+        "blocks_advance": bool((not completion_received) or (not reflection_completed) or status in blocking_statuses),
+        "has_positive_mastery_evidence": bool(completion_received and reflection_completed and status in strong_statuses),
+    }
 
 
 def summarize_mastery(progress: dict[str, Any]) -> dict[str, Any]:
@@ -72,7 +114,8 @@ def summarize_mastery(progress: dict[str, Any]) -> dict[str, Any]:
 
     target_reflection = normalize_string_list(mastery_targets.get("reflection"))
     recorded_reflection = normalize_string_list(mastery_checks.get("reflection"))
-    reflection_done = bool(recorded_reflection or reflection)
+    reflection_done = bool(recorded_reflection or reflection) and reflection_gate_completed(progress)
+    gate = mastery_gate(progress)
 
     return {
         "target_reading": target_reading,
@@ -88,6 +131,11 @@ def summarize_mastery(progress: dict[str, Any]) -> dict[str, Any]:
         "recorded_reflection": recorded_reflection,
         "reflection_done": reflection_done,
         "reflection_text": reflection,
+        "completion_received": gate.get("completion_received"),
+        "reflection_gate_completed": gate.get("reflection_completed"),
+        "mastery_judgement_status": gate.get("status"),
+        "prompting_level": gate.get("prompting_level"),
+        "mastery_level": gate.get("mastery_level"),
         "artifacts": artifacts,
     }
 
@@ -223,6 +271,7 @@ def update_progress_state(progress: dict[str, Any], summary: dict[str, Any], *, 
     material_alignment = summary.get("material_alignment") if isinstance(summary.get("material_alignment"), dict) else {}
 
     review_focus = normalize_string_list(summary.get("review_focus"))
+    evidence_gate_reasons = normalize_string_list(summary.get("evidence_gate_reasons"))
     next_learning = normalize_string_list(summary.get("next_learning"))
     weaknesses = normalize_string_list(summary.get("high_freq_errors"))
     strengths = normalize_string_list(item.get("title") for item in summary.get("solved_items") or [])
@@ -238,9 +287,17 @@ def update_progress_state(progress: dict[str, Any], summary: dict[str, Any], *, 
     session_theme = str(summary.get("session_theme") or active_cluster or summary.get("topic") or "").strip()
     reviewer_verdict = summary.get("reviewer_verdict") if isinstance(summary.get("reviewer_verdict"), dict) else {}
 
-    needs_more_review = bool(summary.get("should_review") or review_gap)
+    gate = mastery_gate(updated)
+    gated_review_debt = normalize_string_list(
+        gate.get("blocking_gaps")
+        + gate.get("next_session_reinforcement")
+        + (["缺少用户完成信号"] if not gate.get("completion_received") else [])
+        + (["缺少 update 前复盘证据"] if not gate.get("reflection_completed") else [])
+    )
+    needs_more_review = bool(summary.get("should_review") or review_gap or gated_review_debt or gate.get("blocks_advance"))
     can_advance = bool(summary.get("can_advance") and not needs_more_review)
-    review_debt = normalize_string_list(review_gap + review_focus)
+    review_debt = normalize_string_list(review_gap + review_focus + evidence_gate_reasons + gated_review_debt)
+    mastered_additions = normalize_string_list(strengths + normalize_string_list(summary.get("covered_scope"))) if gate.get("can_mark_mastered") else []
 
     learning_state.update(
         {
@@ -261,7 +318,7 @@ def update_progress_state(progress: dict[str, Any], summary: dict[str, Any], *, 
             "stage_status": "planned" if attempted <= 0 else ("blocked_by_review" if needs_more_review else "ready_to_advance"),
             "day_status": "planned" if attempted <= 0 else ("completed_with_gaps" if needs_more_review else "completed"),
             "review_debt": review_debt,
-            "mastered_clusters": normalize_string_list(list(progression.get("mastered_clusters") or []) + strengths + normalize_string_list(summary.get("covered_scope"))),
+            "mastered_clusters": normalize_string_list(list(progression.get("mastered_clusters") or []) + mastered_additions),
             "active_clusters": normalize_string_list(([session_theme] if session_theme else [active_cluster] if active_cluster else []) + list(progression.get("active_clusters") or [])),
             "deferred_clusters": normalize_string_list(list(progression.get("deferred_clusters") or []) + weaknesses + project_blockers + review_gap),
             "updated_at": finished_at,
@@ -447,15 +504,33 @@ def summarize_progress(progress: dict[str, Any], questions_map: dict[str, dict[s
     review_focus = normalize_string_list(semantic_summary.get("review_focus") if semantic_valid else [])
     next_learning = normalize_string_list(semantic_summary.get("next_learning") if semantic_valid else [])
 
+    gate = mastery_gate(progress)
+    gate_review_reasons: list[str] = []
+    if not gate.get("completion_received"):
+        gate_review_reasons.append("缺少用户完成信号")
+    if not gate.get("reflection_completed"):
+        gate_review_reasons.append("缺少 update 前复盘证据")
+    mastery_status = str(gate.get("status") or "unknown")
+    if mastery_status in {"partial", "fragile", "blocked"}:
+        gate_review_reasons.append(f"掌握判断为 {mastery_status}")
+    for gap in gate.get("blocking_gaps") or []:
+        gate_review_reasons.append(str(gap))
+    for reinforcement in gate.get("next_session_reinforcement") or []:
+        gate_review_reasons.append(str(reinforcement))
+
     facts_indicate_review = bool(
         review_gap
         or high_freq_errors
         or not mastery.get("reading_done")
         or not mastery.get("reflection_done")
         or pending_review_items
+        or gate_review_reasons
     )
     needs_more_review = bool(semantic_summary.get("should_review")) if semantic_valid else facts_indicate_review
+    if gate_review_reasons:
+        needs_more_review = True
     can_advance = bool(semantic_summary.get("can_advance")) if semantic_valid else False
+    can_advance = bool(can_advance and not gate.get("blocks_advance"))
     reviewer_verdict = {
         "lesson": lesson_review.get("verdict"),
         "question": question_review.get("verdict"),
@@ -489,6 +564,7 @@ def summarize_progress(progress: dict[str, Any], questions_map: dict[str, dict[s
         "high_freq_errors": high_freq_errors,
         "review_focus": normalize_string_list(review_focus),
         "next_learning": normalize_string_list(next_learning),
+        "evidence_gate_reasons": normalize_string_list(gate_review_reasons),
         "wrong_items": wrong_items,
         "solved_items": solved_items[:3],
         "mastery": mastery,
@@ -508,6 +584,7 @@ def summarize_progress(progress: dict[str, Any], questions_map: dict[str, dict[s
         "review_targets": review_targets,
         "review_gap": review_gap,
         "reviewer_verdict": reviewer_verdict,
+        "user_feedback": progress.get("user_feedback") if isinstance(progress.get("user_feedback"), dict) else {},
         "should_review": needs_more_review,
         "can_advance": can_advance,
     }
@@ -571,6 +648,7 @@ def update_learn_plan(plan_path: Path, summary: dict[str, Any], session_dir: Pat
     block = render_log_entry(summary, session_dir)
     updated = upsert_section(original, "学习记录", block)
     write_text(plan_path, updated)
+    append_micro_adjustments(plan_path, summary)
 
 
 def print_summary(summary: dict[str, Any], plan_path: Path, *, stdout_json: bool, feedback_result: dict[str, Any] | None = None) -> None:

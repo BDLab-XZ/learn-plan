@@ -12,20 +12,25 @@ description: 基于 learn-plan.md 生成今日学习内容（课件+练习题）
 1. **课件第一**：课件不是知识提纲，而是有叙事、有案例、有引导的教学内容。默认教学风格为**情景案例式**（以真实场景引入，中途遇到卡点，引入新知识，解决问题），除非用户在 learn-plan.md 中指定了其他偏好。
 2. **题目质量**：题目必须绑定课件知识点，干扰项必须有真实迷惑性。出题和审题必须由两个独立的子 Agent 分别完成。
 3. **缺资料就告知**：如果课件所需的 reference 资料不存在或不完整，必须诚实告知用户，**绝不编造资料内容**。
-4. **强制 check-in**：每次启动必须做进度确认，不能静默继续。
+4. **强制 check-in + 课前复习**：每次启动必须做进度确认，并在生成新课前做 1–3 个历史复习问题；复习结果写入 `progress.pre_session_review`。
+5. **学习过程也是证据**：session 启动后，用户可继续在终端问资料、问课件、问错题、要求换讲法或反馈难度；这些交互必须通过 `learn_session_evidence_update.py` 记录到 `interaction_events.jsonl` 与 `progress.interaction_evidence`。
+6. **完成信号后才复盘**：生成题目或网页提交不等于学习结束；只有用户在终端明确说“做完了 / 学完了 / 可以更新了”后，才记录 `completion_signal` 并进入 post-session reflection gate。
+7. **复盘先于更新**：`learn_today_update.py` 必须在 completion signal 与 `reflection.json` 写入后运行；用户明确跳过复盘时，只能记录 `reflection.status=skipped_by_user`，不能把 covered scope 直接判为 mastered。
+8. **微调落到计划，结构调整走审批**：题目难度、题型比例、讲解方式、节奏、例子风格等低风险微调写入 `learn-plan.md` 的“当前教学/练习微调”；阶段路线、目标、材料、时间预算等结构性变化进入 `curriculum_patch_queue.json` 等待用户确认。
 
 ---
 
 ## 1. 执行流程
 
 ```text
-  Step 1: check-in（进度确认）
+  Step 1: check-in + 课前历史复习（写入 pre_session_review）
     → Step 2: 定位今日内容 + 加载资料
     → Step 3: 生成课件
     → Step 4: 生成练习题（scope → plan → questions → review）
     → Step 5: 组装 session 并启动
-    → Step 6: 学完后复盘（含学习记录回写）
-    → 更新 learn-plan.md 和 learner_model
+    → Step 5.5: 用户浏览器学习/练题，终端交互写入 interaction_events.jsonl
+    → Step 6: 用户明确完成后复盘（completion_signal + reflection.json，含学习记录回写）
+    → 更新 learn-plan.md、learner_model 和 patch queue
 ```
 
 ---
@@ -40,6 +45,8 @@ description: 基于 learn-plan.md 生成今日学习内容（课件+练习题）
 4. 想复习、推进新内容、还是解决卡点？
 
 如果 learn-plan.md 的进度指针与用户口述不一致，以用户实际情况为准，并更新进度指针。
+
+check-in 后、生成新课前，必须做轻量历史复习：围绕上次薄弱点、`review_debt`、`solid_after_intervention` 的知识点或用户曾说“不懂”的内容，问 1–3 个问题。复习结果必须保存到当前 session 的 `progress.pre_session_review`；如果复习不通过，先建议补强，但第一版由用户决定继续新内容、先补强或缩小今日目标，并把选择写入 `pre_session_review.user_decision` / `next_step`。
 
 ---
 
@@ -172,7 +179,7 @@ description: 基于 learn-plan.md 生成今日学习内容（课件+练习题）
 复用 session_orchestrator.py 和 session_bootstrap.py：
 
 ```bash
-python3 "$HOME/.claude/skills/learn-plan/session_orchestrator.py" \
+python3 "$HOME/.claude/skills/learn-plan/learn-plan/session_orchestrator.py" \
   --session-dir "<session目录>" \
   --topic "<学习主题>" \
   --plan-path "<learn-plan.md路径>" \
@@ -198,19 +205,24 @@ python3 "$HOME/.claude/skills/learn-plan/session_orchestrator.py" \
 
 ## 7. Step 6：学后复盘
 
-用户完成网页练习后，读取 progress.json，分析答题结果。
+不要在 session 启动后立即复盘或更新。用户在浏览器学习/练题期间，可以继续在终端向主 agent 提问、要求换讲法、反馈难度/节奏/题型或总结自己的理解；主 agent 应即时答疑，并用 `learn_session_evidence_update.py` 追加 `interaction_events.jsonl`，同步摘要到 `progress.interaction_evidence` 与 `progress.user_feedback`。
+
+只有用户在终端明确反馈“做完了 / 学完了 / 可以更新了”后，才记录 `completion_signal`，读取 progress.json、interaction_events.jsonl 和 pre_session_review，进入 update 前复盘。网页提交或保存进度不等于最终更新。
 
 ### 7.1 复盘内容
 
-向用户展示（终端简短输出）：
+先问 1–3 个轻量但有深度的复盘问题，必要时追问 1–2 轮，目标是判断用户能否解释本质、辨析反例、迁移到新场景或重构错因。today 复盘是教学性复盘，允许提示和纠偏；如果用户从误解到能自我总结，可记录 `solid_after_intervention`，允许推进但保留轻量复习债。复盘结果写入 `reflection.json`、`progress.reflection`、`progress.mastery_checks.reflection` 和 `progress.mastery_judgement`。
+
+复盘后向用户展示（终端简短输出）：
 
 1. **本次概况**：几道题、正确率、耗时
 2. **薄弱知识点**：哪些题错了、对应课件哪一节、反映了什么知识缺口
-3. **具体建议**：
+3. **复盘掌握判断**：无提示掌握、提示后掌握、partial、fragile 还是 blocked
+4. **具体建议**：
    - 推荐重读课件哪一节
    - 推荐读哪份资料的哪一部分（具体到章节/页面）
    - 是否需要回炉当前阶段，还是可以继续推进
-4. **下次预告**：如果继续推进，下次学什么
+5. **下次预告**：如果继续推进，下次学什么
 
 ### 7.2 更新 learn-plan.md
 
@@ -226,10 +238,12 @@ python3 "$HOME/.claude/skills/learn-plan/session_orchestrator.py" \
 - 各能力维度的掌握证据
 - 复习债（需要回头强化什么）
 - 下次优先级
+- 提示后掌握、迁移薄弱、课前复习不稳等 learning behaviors
+- 用户单次反馈形成的偏好候选，不把一次反馈直接当长期偏好
 
 ### 7.4 触发动态调整（如需要）
 
-如果连续出现同类薄弱项，主动提示用户是否需要微调计划（走 mini approval 流程，见 learn-plan Phase 3 文档）。
+低风险微调（题目难度、题型比例、讲解方式、节奏、例子风格、反馈方式）可以由 update 写入 `learn-plan.md` 的“当前教学/练习微调”，后续 `/learn-today` / `/learn-test` 默认采用。结构性调整（阶段顺序、目标、材料、时间预算、学习频率）只写入 `curriculum_patch_queue.json`，保持 `application_policy=pending-user-approval`，用户确认前不得改长期路线主体。
 
 ---
 

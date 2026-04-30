@@ -118,6 +118,10 @@ def default_learner_model() -> dict[str, Any]:
             "weaknesses": [],
             "review_debt": [],
             "mastered_scope": [],
+            "preferences": {},
+            "preference_candidates": {},
+            "learning_behaviors": [],
+            "prompted_mastery_scope": [],
             "confidence": 0.0,
             "last_updated": None,
         }
@@ -137,9 +141,13 @@ def load_learner_model(path: Path) -> dict[str, Any]:
         model.update(existing)
     model.setdefault("schema", LEARNER_MODEL_SCHEMA)
     model.setdefault("contract_version", CONTRACT_VERSION)
-    for key in ("evidence_log", "strengths", "weaknesses", "review_debt", "mastered_scope"):
+    for key in ("evidence_log", "strengths", "weaknesses", "review_debt", "mastered_scope", "learning_behaviors", "prompted_mastery_scope"):
         if not isinstance(model.get(key), list):
             model[key] = []
+    if not isinstance(model.get("preferences"), dict):
+        model["preferences"] = {}
+    if not isinstance(model.get("preference_candidates"), dict):
+        model["preference_candidates"] = {}
     return _apply_learner_model_envelope(model)
 
 
@@ -189,16 +197,57 @@ def update_learner_model_from_summary(
     updated.setdefault("schema", LEARNER_MODEL_SCHEMA)
     updated.setdefault("contract_version", CONTRACT_VERSION)
     evidence = normalize_string_list(session_facts.get("evidence"))
+    mastery_judgement = session_facts.get("mastery_judgement_facts") if isinstance(session_facts.get("mastery_judgement_facts"), dict) else {}
+    reflection_facts = session_facts.get("reflection_facts") if isinstance(session_facts.get("reflection_facts"), dict) else {}
+    completion_signal = session_facts.get("completion_signal_facts") if isinstance(session_facts.get("completion_signal_facts"), dict) else {}
+    user_feedback = session_facts.get("user_feedback_facts") if isinstance(session_facts.get("user_feedback_facts"), dict) else {}
+    pre_session_review = session_facts.get("pre_session_review_facts") if isinstance(session_facts.get("pre_session_review_facts"), dict) else {}
     strengths = normalize_string_list(item.get("title") for item in summary.get("solved_items") or [])
     weaknesses = _sanitize_feedback_focus(summary.get("high_freq_errors") or summary.get("weaknesses"))
-    review_debt = _sanitize_feedback_focus(summary.get("review_focus") or weaknesses)
-    mastered_scope = normalize_string_list(summary.get("covered_scope") or summary.get("mainline_progress"))
+    review_debt = _sanitize_feedback_focus(
+        summary.get("review_focus")
+        or summary.get("evidence_gate_reasons")
+        or mastery_judgement.get("blocking_gaps")
+        or weaknesses
+    )
+    review_debt = append_unique(review_debt, mastery_judgement.get("next_session_reinforcement"), limit=80)
+    if pre_session_review.get("passed") is False:
+        review_debt = append_unique(review_debt, pre_session_review.get("weak_points"), limit=80)
+    candidate_mastered_scope = normalize_string_list(summary.get("covered_scope") or summary.get("mainline_progress"))
+    mastery_status = str(mastery_judgement.get("status") or "unknown").strip()
+    prompting_level = str(mastery_judgement.get("prompting_level") or "unknown").strip()
+    completion_received = completion_signal.get("status") in {"received", "completed"}
+    reflection_completed = reflection_facts.get("status") == "completed"
+    can_mark_mastered = bool(completion_received and reflection_completed and mastery_status == "mastered" and prompting_level in {"none", "unprompted", "unknown"})
+    prompted_mastery = bool(completion_received and reflection_completed and mastery_status == "solid_after_intervention")
 
     updated["strengths"] = append_unique(updated.get("strengths") or [], strengths, limit=80)
     updated["weaknesses"] = append_unique(updated.get("weaknesses") or [], weaknesses, limit=80)
     updated["review_debt"] = append_unique(updated.get("review_debt") or [], review_debt, limit=80)
-    updated_mastered_scope = append_unique(updated.get("mastered_scope") or [], mastered_scope, limit=80)
-    updated["mastered_scope"] = sanitize_mastered_scope(updated_mastered_scope)
+    if can_mark_mastered:
+        updated_mastered_scope = append_unique(updated.get("mastered_scope") or [], candidate_mastered_scope, limit=80)
+        updated["mastered_scope"] = sanitize_mastered_scope(updated_mastered_scope)
+    else:
+        updated["mastered_scope"] = sanitize_mastered_scope(updated.get("mastered_scope") or [])
+    learning_behaviors = []
+    if prompted_mastery:
+        updated["prompted_mastery_scope"] = append_unique(updated.get("prompted_mastery_scope") or [], candidate_mastered_scope, limit=80)
+        learning_behaviors.append("提示后能稳定掌握")
+    if mastery_status in {"partial", "fragile", "blocked"}:
+        learning_behaviors.append(f"{mastery_status} 掌握状态需复习")
+    if prompting_level and prompting_level not in {"unknown", "none", "unprompted"}:
+        learning_behaviors.append(f"需要提示程度：{prompting_level}")
+    updated["learning_behaviors"] = append_unique(updated.get("learning_behaviors") or [], learning_behaviors, limit=80)
+
+    preference_candidates = updated.get("preference_candidates") if isinstance(updated.get("preference_candidates"), dict) else {}
+    for key in ("difficulty", "teaching_style", "pace", "question_design", "material_fit"):
+        value = user_feedback.get(key)
+        if value:
+            preference_candidates[key] = append_unique(preference_candidates.get(key) or [], [str(value)], limit=20)
+    comments = normalize_string_list(user_feedback.get("comments"))
+    if comments:
+        preference_candidates["comments"] = append_unique(preference_candidates.get("comments") or [], comments, limit=20)
+    updated["preference_candidates"] = preference_candidates
     updated["last_updated"] = session_facts.get("date") or summary.get("date")
 
     attempted = int((session_facts.get("scores") or {}).get("attempted") or 0)
@@ -222,6 +271,10 @@ def update_learner_model_from_summary(
                 "evidence": evidence,
                 "session_dir": session_facts.get("session_dir"),
                 "confidence": confidence,
+                "mastery_judgement": mastery_judgement,
+                "completion_signal": completion_signal,
+                "user_feedback": user_feedback,
+                "pre_session_review": pre_session_review,
             },
             stage="feedback",
             generator="learner-model-update",

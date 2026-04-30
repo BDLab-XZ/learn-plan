@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 import unittest
@@ -12,6 +13,7 @@ if str(SKILL_DIR) not in sys.path:
 from learn_runtime.payload_builder import ensure_question_shape
 from learn_runtime.question_validation import validate_questions_payload
 from learn_runtime.schemas import validate_progress_basic, validate_question_plan_basic, validate_question_scope_basic, validate_questions_basic
+from session_bootstrap import normalize_progress_data
 from session_bootstrap import progress_shape_is_valid as bootstrap_progress_shape_is_valid
 from session_bootstrap import validate_questions_data
 from session_orchestrator import progress_shape_is_valid as orchestrator_progress_shape_is_valid
@@ -217,6 +219,58 @@ class RuntimeSchemaTest(unittest.TestCase):
         self.assertEqual(validate_progress_basic(progress), [])
         self.assertTrue(bootstrap_progress_shape_is_valid(progress))
         self.assertTrue(orchestrator_progress_shape_is_valid(progress))
+
+    def test_bootstrap_fills_agent_evidence_defaults_for_old_progress(self) -> None:
+        template_path = SKILL_DIR / "templates" / "progress_template.json"
+        template = json.loads(template_path.read_text(encoding="utf-8"))
+        old_progress = {
+            "date": "2026-04-24",
+            "topic": "Python 基础",
+            "session": {"type": "today", "status": "active", "started_at": "2026-04-24T08:00:00"},
+            "summary": {"total": 1, "attempted": 0, "correct": 0},
+            "context": {},
+            "questions": {},
+        }
+        questions_data = {
+            "date": "2026-04-24",
+            "topic": "Python 基础",
+            "session_type": "today",
+            "session_intent": "learning",
+            "assessment_kind": None,
+            "test_mode": None,
+            "questions": [
+                {
+                    "id": "q1",
+                    "category": "concept",
+                    "type": "single_choice",
+                    "question": "Python 中哪个符号用于变量赋值？",
+                    "options": ["=", "=="],
+                    "answer": 0,
+                    "difficulty_level": "basic",
+                }
+            ],
+        }
+        args = argparse.Namespace(
+            session_type=None,
+            test_mode=None,
+            plan_path="learn-plan.md",
+            resume_topic=None,
+            resume_goal=None,
+            resume_level=None,
+            resume_schedule=None,
+            resume_preference=None,
+        )
+
+        normalized, changed = normalize_progress_data(old_progress, template, questions_data, args)
+
+        self.assertTrue(changed)
+        self.assertEqual(normalized["pre_session_review"]["status"], "not_started")
+        self.assertEqual(normalized["interaction_evidence"], [])
+        self.assertEqual(normalized["user_feedback"]["scope"], "session")
+        self.assertEqual(normalized["mastery_judgement"]["status"], "unknown")
+        self.assertEqual(normalized["completion_signal"]["status"], "not_received")
+        self.assertEqual(validate_progress_basic(normalized), [])
+        self.assertTrue(bootstrap_progress_shape_is_valid(normalized))
 
 
 if __name__ == "__main__":

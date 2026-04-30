@@ -21,13 +21,18 @@
 │   └── index.json
 ├── sessions/
 │   ├── YYYY-MM-DD/
+│   │   ├── lesson.html
 │   │   ├── questions.json
 │   │   ├── progress.json
+│   │   ├── interaction_events.jsonl
+│   │   ├── reflection.json
 │   │   ├── 题集.html
 │   │   └── server.py
 │   └── YYYY-MM-DD-test/
 │       ├── questions.json
 │       ├── progress.json
+│       ├── interaction_events.jsonl
+│       ├── reflection.json
 │       ├── 题集.html
 │       └── server.py
 └── .learn-workflow/
@@ -36,6 +41,7 @@
     ├── diagnostic.json
     ├── approval.json
     ├── workflow_state.json
+    ├── session_facts.json
     ├── learner_model.json
     └── curriculum_patch_queue.json
 ```
@@ -49,13 +55,16 @@
 | `learn-plan.md` | 正式长期状态 | `/learn-plan finalize`、已批准 patch | `/learn-today`、`/learn-test`、update | 可以 | 用户可读长期 curriculum 主文档 |
 | `materials/index.json` | 材料状态 | planning/materials/downloader | runtime/materials/downloader | 谨慎 | 材料索引、角色、segment、缓存状态 |
 | `sessions/*/questions.json` | session 输入 | runtime | 前端/server/update | 不建议 | 题目、上下文、材料引用 |
-| `sessions/*/progress.json` | session 事实 | 前端/server/bootstrap/update | update/runtime | 不建议 | 答题历史、统计、session 状态 |
+| `sessions/*/progress.json` | session 事实 | 前端/server/bootstrap/update/evidence CLI | update/runtime | 不建议 | 答题历史、统计、课前复习、完成信号、复盘摘要、掌握判断 |
+| `sessions/*/interaction_events.jsonl` | session 证据日志 | 主 agent / evidence CLI | update/feedback | 不建议 | 终端学习交互、提问、误解、反馈、纠偏与自我总结摘要 |
+| `sessions/*/reflection.json` | session 复盘产物 | 主 agent / evidence CLI | update/feedback | 不建议 | 用户明确完成后的 update 前多轮复盘与 mastery judgement |
 | `.learn-workflow/clarification.json` | workflow 中间态 | `/learn-plan` orchestrator | workflow engine/planning | 不建议 | 用户画像、目标、偏好、约束 |
 | `.learn-workflow/research.json` | workflow 中间态 | `/learn-plan` orchestrator | workflow engine/planning | 不建议 | research plan、能力要求、材料取舍依据 |
 | `.learn-workflow/diagnostic.json` | workflow 中间态 | `/learn-plan` orchestrator | workflow engine/planning | 不建议 | 诊断题、答案、评估、起点判断 |
 | `.learn-workflow/approval.json` | workflow 中间态 | `/learn-plan` orchestrator | workflow engine | 不建议 | 计划草案确认、tradeoff、风险接受 |
 | `.learn-workflow/workflow_state.json` | 路由摘要 | workflow engine | skill prompt/CLI | 不建议 | 当前 blocking stage 与 next action |
-| `.learn-workflow/learner_model.json` | 反馈状态 | update/feedback | runtime/update | 不建议 | 能力估计、证据、复习债 |
+| `.learn-workflow/session_facts.json` | 反馈事实快照 | update/feedback | learner_model/patch queue/debug | 不建议 | 最近一次 session 的 performance、interaction、reflection、feedback 事实汇总 |
+| `.learn-workflow/learner_model.json` | 反馈状态 | update/feedback | runtime/update | 不建议 | 能力估计、证据、复习债、偏好候选与提示后掌握状态 |
 | `.learn-workflow/curriculum_patch_queue.json` | patch 队列 | update/feedback | `/learn-plan` approval/finalize | 不建议 | 待批准的长期计划调整建议 |
 
 ---
@@ -86,8 +95,9 @@ update 脚本可以追加：
 - `学习记录`
 - `测试记录`
 - 简短后续建议
+- `当前教学/练习微调`：题目难度、题型比例、讲解方式、节奏、例子风格、反馈方式等低风险微调
 
-但不应在未批准时重写长期阶段路线。
+但不应在未批准时重写长期阶段路线。阶段顺序、目标、材料、时间预算、学习频率等结构性变化必须进入 `curriculum_patch_queue.json` 并等待用户确认。
 
 ### 必须保留的 section
 
@@ -101,6 +111,7 @@ update 脚本可以追加：
 - `掌握度检验设计`
 - `今日生成规则`
 - `每日推进表`
+- `当前教学/练习微调`（可选，低风险 session feedback 的当前生效策略）
 - `学习记录`
 - `测试记录`
 
@@ -276,16 +287,46 @@ workflow 中间态保存在：
 职责：
 - 保存 session 事实记录。
 - 包括答题历史、正确率、开始/结束状态、材料与计划来源。
+- 保存 agent workflow 写入的课前复习、完成信号、交互摘要、用户反馈、复盘摘要与掌握判断。
 
 写入者：
 - `session_bootstrap.py`
 - 前端/server
+- `learn_session_evidence_update.py`：写入 `pre_session_review`、`completion_signal`、`interaction_evidence`、`user_feedback`、`reflection`、`mastery_judgement`
 - update 脚本在汇总时可补充结构化状态
 
 不应承担：
 - workflow 中间态
 - 长期课程路线
 - 已批准计划调整
+
+## 5.3 interaction_events.jsonl
+
+职责：
+- 追加式记录用户在终端与主 agent 的学习交互摘要。
+- 记录用户提问、误解暴露、agent 纠偏、用户自我总结、难度/讲法/节奏反馈和 completion signal 相关事件。
+- 只保存结构化摘要与必要短摘录，不保存完整聊天 transcript。
+
+写入者：
+- 主 agent 通过 `learn_session_evidence_update.py` 写入。
+
+不应承担：
+- 最终 mastery 判定；它提供 evidence，最终判断在 `reflection.json` / `mastery_judgement`。
+- 长期偏好直接落盘；单次反馈先进入 session evidence。
+
+## 5.4 reflection.json
+
+职责：
+- 保存用户明确完成学习/测试后的 update 前复盘产物。
+- 记录多轮复盘问题、用户回答摘要、提示程度、agent 反馈、最终 `mastery_judgement`、learning path evidence、review debt 和 user feedback。
+
+写入者：
+- 主 agent 通过 `learn_session_evidence_update.py` 写入。
+
+边界：
+- `/learn-today` reflection 是教学性复盘，可提示和纠偏；`solid_after_intervention` 可推进但保留复习债。
+- `/learn-test` reflection 是评估性复盘，提示要少；提示后掌握不等同无提示 mastered。
+- 没有 completion signal 时不应生成最终 reflection；用户明确跳过时记录 skipped。
 
 ---
 
@@ -296,12 +337,25 @@ workflow 中间态保存在：
 职责：
 - 汇总跨 session 的能力证据。
 - 保存当前能力估计、置信度、弱信号、复习债、下一步建议。
+- 区分无提示 mastered 与提示后掌握；`solid_after_intervention` 进入提示后掌握/复习债，不直接进入 mastered scope。
+- 保存偏好候选与稳定学习行为信号，例如迁移薄弱、课前复习不稳、需要提示后才能掌握。
 
 边界：
 - 它可以影响 `/learn-today` 的选题和复习优先级。
 - 它不能单独决定长期阶段路线改写。
 
-## 6.2 curriculum_patch_queue.json
+## 6.2 session_facts.json
+
+职责：
+- 保存最近一次 update 聚合出的事实快照。
+- 汇总三层证据：performance evidence（答题表现）、interaction evidence（学习中提问/误解/反馈/纠偏）、reflection evidence（完成后的复盘追问与掌握判断）。
+- 为 learner model 与 patch proposal 提供同一份可追踪输入。
+
+边界：
+- 它是事实汇总，不直接生成课程建议。
+- 它可被下一次 update 覆盖；长期历史应进入 `learner_model.evidence_log` 或 session 文件本身。
+
+## 6.3 curriculum_patch_queue.json
 
 职责：
 - 保存 update 层提出的计划调整建议。
@@ -314,7 +368,7 @@ patch 状态：
 - `rejected`：用户拒绝
 - `applied`：已写入正式计划
 
-当前 update 写入的 patch 必须保持 `application_policy = pending-user-approval`，并附带 `quality_review`。
+当前 update 写入的 patch 必须保持 `application_policy = pending-user-approval`，并附带 `quality_review`。单次卡点优先进入 review debt 或 next-session reinforcement；连续同类证据或结构性影响才生成可审批 patch。缺 interaction/reflection/pre-session review 证据的结构性 patch 应降级为 `pending-evidence`。
 
 ---
 
@@ -348,19 +402,23 @@ learn-plan.md
 -> 题集.html + server.py
 ```
 
-运行时只能基于正式计划和反馈状态生成 session，不应修改 workflow 中间态。
+运行时只能基于正式计划和反馈状态生成 session，不应修改 workflow 中间态。`/learn-today` 生成新课前必须做课前历史复习并保存 `pre_session_review`；session 启动后，终端学习交互写入 `interaction_events.jsonl`。
 
 ## 7.3 复盘回写脚本
 
 ```text
 questions.json + progress.json
--> facts summary
++ interaction_events.jsonl
++ reflection.json
+-> performance / interaction / reflection facts summary
+-> .learn-workflow/session_facts.json
 -> learner_model.json update
--> curriculum_patch_queue.json proposed patch
+-> curriculum_patch_queue.json proposed|pending-evidence patch
 -> learn-plan.md 学习记录/测试记录追加
+-> learn-plan.md 当前教学/练习微调追加（仅低风险反馈）
 ```
 
-主体计划结构只有在 patch 被确认后才修改。
+最终 update 必须发生在用户 completion signal 与 reflection gate 之后。缺 completion/reflection 时，update 只能写事实记录和复习债，不能把 covered scope 直接判为 mastered。主体计划结构只有在 patch 被确认后才修改。
 
 补充说明：若 session 属于 `/learn-plan` diagnostic gate 触发的起始测试，新链路应优先由内部 `learn_test_update.py` 回写流程消费；`learn_today_update.py` 仅保留 today 主路径与 legacy `plan-diagnostic` 兼容。
 

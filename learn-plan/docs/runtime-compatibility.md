@@ -209,12 +209,16 @@ sessions/YYYY-MM-DD-test/
 
 允许：
 - 先做 check-in
+- 在生成新课前做课前历史复习，并保存 `progress.pre_session_review`
 - 先生成教师型 daily lesson
 - 题目和材料/lesson 更强绑定
+- session 启动后由主 agent 在终端继续答疑、追问和记录学习交互到 `interaction_events.jsonl`
+- 用户明确完成后、update 前生成 `reflection.json` 与 `mastery_judgement`
 
 不允许：
 - 抛弃当前 `questions.json + progress.json + 题集.html + server.py` 模型
 - 引入另一套全新前端/后端协议导致旧 session 不可用
+- 把复盘面板或掌握判断搬到前端 UI；本轮掌握判断属于 skill / agent workflow
 
 ---
 
@@ -224,17 +228,24 @@ sessions/YYYY-MM-DD-test/
 
 1. 继续可从现有 `progress.json` 工作
 2. 继续把摘要写回 `learn-plan.md` 的记录区块
+3. 优先消费 `interaction_events.jsonl`、`reflection.json`、`completion_signal`、`pre_session_review` 与 `user_feedback`，但缺这些新增文件时不得破坏旧 session 的基本记录回写
 
 补充边界：由 `/learn-plan` diagnostic gate 触发的新起始测试 session，应优先收口到内部 `learn_test_update.py` 回写流程；`learn_today_update.py` 仅保留 today 主路径与 legacy `plan-diagnostic` 兼容。
 
 允许新增：
+- `interaction_events.jsonl`
+- `reflection.json`
+- `.learn-workflow/session_facts.json`
 - `learner_model.json` 更新
 - `curriculum_patch_queue.json` 提案
 - 更细的掌握度证据
 - `pending-evidence` patch 与 `quality_review` 等质量 gate 字段
+- `learn-plan.md` 的“当前教学/练习微调”区块，用于低风险反馈默认生效
 
 不允许破坏：
 - 只写新 JSON，不再更新 `learn-plan.md`
+- 在缺 completion signal / reflection 时把 covered scope 直接判为 mastered
+- 未经用户确认就改长期阶段路线、目标、材料、时间预算或学习频率
 - 不强依赖 `PROJECT.md`
 
 ---

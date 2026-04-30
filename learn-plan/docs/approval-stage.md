@@ -28,11 +28,12 @@ approval 的目标是在正式写盘前，把计划草案、关键 tradeoff 和 
 
 ## 4. patch review
 
-若 `curriculum_patch_queue.json` 中存在 proposed / pending patch：
-1. 列出每条 patch 的 id、topic、patch_type、rationale、confidence
-2. 逐条让用户批准或拒绝
-3. 把决定写入 approval state
-4. 再调用 patch 应用逻辑
+若 `curriculum_patch_queue.json` 中存在 proposed / pending-evidence patch：
+1. 列出每条 patch 的 id、topic、patch_type、rationale、confidence、evidence、quality_review
+2. 区分低风险微调与结构性调整：低风险微调应已经落到 `learn-plan.md` 的“当前教学/练习微调”；approval 只处理会改阶段路线、目标、材料、时间预算或学习频率的结构性 patch
+3. `pending-evidence` 只展示为待补证据，不进入应用；`proposed` 才逐条让用户批准或拒绝
+4. 把决定写入 approval state
+5. 再调用 patch 应用逻辑
 
 ## 5. 输出
 
@@ -50,3 +51,5 @@ approval 的目标是在正式写盘前，把计划草案、关键 tradeoff 和 
 - 不要在仍有关键决策未确认时把 approval 标记成完成。
 - 不要在 material_curation 未经用户确认时把 `confirmed_material_strategy` 置为 true。
 - 不要手动改 approval JSON 来跳过用户确认。
+- 不要把一次 session 的题目难度/讲解方式反馈升级成结构性路线变化；先作为 session evidence 或“当前教学/练习微调”。
+- 不要应用 `pending-evidence` patch；先补 interaction/reflection/pre-session review 等证据。
