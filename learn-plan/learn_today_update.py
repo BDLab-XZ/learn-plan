@@ -17,6 +17,13 @@ from learn_feedback import (
     update_patch_queue_file,
 )
 from learn_feedback.curriculum_patch import pending_patch_items
+from learn_knowledge import (
+    build_session_knowledge_evidence_items,
+    count_applicable_session_evidence,
+    load_knowledge_state,
+    save_knowledge_state,
+    update_state_from_session_evidence,
+)
 from learn_feedback.diagnostic_update import (
     extract_question_clusters,
     load_questions_map,
@@ -643,6 +650,40 @@ def upsert_section(text: str, heading: str, block: str) -> str:
     return upsert_markdown_section(text, heading, block)
 
 
+def update_knowledge_state_from_progress(
+    plan_path: Path,
+    session_dir: Path,
+    progress: dict[str, Any],
+    questions_map: dict[str, dict[str, Any]],
+    summary: dict[str, Any],
+) -> dict[str, Any]:
+    state = load_knowledge_state(plan_path)
+    if not state:
+        return {"status": "skipped", "reason": "missing_knowledge_state", "evidence_count": 0}
+    if state.get("status") not in {"confirmed", "active"}:
+        return {"status": "skipped", "reason": "knowledge_state_not_confirmed", "evidence_count": 0}
+    evidence_items = build_session_knowledge_evidence_items(
+        progress,
+        questions_map,
+        session_type="today",
+        gate=mastery_gate(progress),
+    )
+    if not evidence_items:
+        return {"status": "skipped", "reason": "no_bound_question_evidence", "evidence_count": 0}
+    applicable_count = count_applicable_session_evidence(state, evidence_items)
+    if applicable_count <= 0:
+        return {"status": "skipped", "reason": "invalid_knowledge_point_binding", "evidence_count": 0}
+    updated_state = update_state_from_session_evidence(
+        state,
+        session_dir=session_dir,
+        session_type="today",
+        evidence_items=evidence_items,
+        summary=summary,
+    )
+    save_knowledge_state(plan_path, updated_state)
+    return {"status": "updated", "reason": None, "evidence_count": applicable_count}
+
+
 def update_learn_plan(plan_path: Path, summary: dict[str, Any], session_dir: Path) -> None:
     original = read_text_if_exists(plan_path)
     block = render_log_entry(summary, session_dir)
@@ -716,6 +757,8 @@ def main() -> int:
         return 0
     summary = summarize_progress(progress, questions_map, semantic_summary=semantic_summary)
     updated_progress = update_progress_state(progress, summary, session_dir=session_dir)
+    knowledge_update = update_knowledge_state_from_progress(plan_path, session_dir, updated_progress, questions_map, summary)
+    summary["knowledge_state_update"] = knowledge_update
     write_json(progress_path, updated_progress)
     update_learn_plan(plan_path, summary, session_dir)
     feedback_result = write_feedback_artifacts(plan_path, summary, updated_progress, session_dir, update_type="today")

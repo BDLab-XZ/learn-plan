@@ -212,7 +212,55 @@ def _question_public_cases(question, runtime_context):
     if cases:
         return cases
     public_tests = question.get("public_tests") if isinstance(question.get("public_tests"), list) else []
-    return [case for case in public_tests if isinstance(case, dict) and _is_public_case(case)]
+    public_cases = [case for case in public_tests if isinstance(case, dict) and _is_public_case(case)]
+    if public_cases:
+        return public_cases
+    examples = question.get("examples") if isinstance(question.get("examples"), list) else []
+    return [_example_to_public_case(case) for case in examples if isinstance(case, dict)]
+
+
+def _example_to_public_case(example):
+    case = {key: value for key, value in example.items() if key not in {"input", "output"}}
+    case.setdefault("category", "public")
+    if "output" in example and "expected" not in case:
+        case["expected"] = example.get("output")
+    if "args" not in case and "kwargs" not in case and "input" in example:
+        input_value = example.get("input")
+        if isinstance(input_value, dict):
+            case["kwargs"] = input_value
+        else:
+            case["args"] = [input_value]
+    return case
+
+
+def _case_matches_public_example(case, public_examples):
+    if not isinstance(case, dict):
+        return False
+    category = str(case.get("category") or case.get("visibility") or "public").strip().lower()
+    if category != "public":
+        return False
+    try:
+        case_key = json.dumps(
+            {"args": case.get("args"), "kwargs": case.get("kwargs"), "expected": case.get("expected")},
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
+    except Exception:
+        return False
+    for example in public_examples:
+        try:
+            example_key = json.dumps(
+                {"args": example.get("args"), "kwargs": example.get("kwargs"), "expected": example.get("expected")},
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            )
+        except Exception:
+            continue
+        if case_key == example_key:
+            return True
+    return False
 
 
 def _is_public_case(case):
@@ -684,9 +732,12 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/run":
             try:
                 mode = payload.get("mode", "script")
+                question = find_question_by_id(payload.get("question_id")) if payload.get("question_id") else None
+                if isinstance(question, dict) and question.get("function_name") and not payload.get("function_name"):
+                    payload["function_name"] = question.get("function_name")
                 if mode == "query":
                     result = self._run_sql_query(payload)
-                elif mode == "function" and payload.get("function_name"):
+                elif (mode == "function" or (isinstance(question, dict) and question.get("function_name"))) and payload.get("function_name"):
                     result = self._run_function_preview(payload, timeout=10)
                 else:
                     code = payload.get("code", "")
@@ -699,9 +750,12 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/submit":
             try:
                 mode = payload.get("mode", "script")
+                question = find_question_by_id(payload.get("question_id")) if payload.get("question_id") else None
+                if isinstance(question, dict) and question.get("function_name") and not payload.get("function_name"):
+                    payload["function_name"] = question.get("function_name")
                 if mode == "query":
                     result = self._submit_sql_query(payload)
-                elif mode == "function" and payload.get("function_name"):
+                elif (mode == "function" or (isinstance(question, dict) and question.get("function_name"))) and payload.get("function_name"):
                     result = self._submit_function(payload, timeout=10)
                 elif mode == "written":
                     result = self._submit_written(payload)
@@ -831,6 +885,9 @@ class Handler(BaseHTTPRequestHandler):
                         normalized_case = dict(case)
                         normalized_case.setdefault("category", "public")
                         cases.append(normalized_case)
+            if not cases:
+                examples = question.get("examples") if isinstance(question.get("examples"), list) else []
+                cases = [_example_to_public_case(case) for case in examples if isinstance(case, dict)]
         user_args = payload.get("args")
         user_kwargs = payload.get("kwargs")
         if not cases:
@@ -919,8 +976,13 @@ class Handler(BaseHTTPRequestHandler):
                             normalized_case = dict(case)
                             normalized_case.setdefault("category", category)
                             test_cases.append(normalized_case)
+            examples = question.get("examples") if isinstance(question.get("examples"), list) else []
+            public_examples = [_example_to_public_case(case) for case in examples if isinstance(case, dict)]
+            if public_examples:
+                test_cases = public_examples + [case for case in test_cases if not (isinstance(case, dict) and _case_matches_public_example(case, public_examples))]
             if not test_cases:
                 test_cases = question.get("test_cases", [])
+        case_summaries = []
         failed_case_summaries = []
         failure_types = []
         passed_count = 0
@@ -936,6 +998,27 @@ class Handler(BaseHTTPRequestHandler):
                 total_public_count += 1
             result = self._run_function_case(code, function_name, case, timeout)
             passed = bool(result.get("passed")) and not result.get("error")
+            error = "" if passed else result.get("error") or "wrong_answer"
+            input_value = case.get("input", case.get("args", case.get("kwargs"))) if isinstance(case, dict) else None
+            expected_value = case.get("expected") if isinstance(case, dict) else None
+            summary = {
+                "case": i + 1,
+                "category": category,
+                "passed": passed,
+                "error": error,
+                "capability_tags": case.get("capability_tags", []) if isinstance(case, dict) else [],
+                "input": input_value,
+                "inputDisplay": display_value(input_value),
+                "expected": expected_value,
+                "expectedDisplay": result.get("expectedDisplay") or display_value(expected_value),
+                "expected_repr": result.get("expected_repr", ""),
+                "actualDisplay": result.get("actualDisplay"),
+                "actual_repr": result.get("actual_repr", ""),
+                "stdout": result.get("stdout", ""),
+                "stderr": result.get("stderr", ""),
+                "traceback": result.get("traceback", ""),
+            }
+            case_summaries.append(summary)
             if passed:
                 passed_count += 1
                 if category == "hidden":
@@ -943,31 +1026,9 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     passed_public_count += 1
                 continue
-            error = result.get("error") or "wrong_answer"
             if error not in failure_types:
                 failure_types.append(error)
             if len(failed_case_summaries) < MAX_FAILED_CASE_SUMMARIES:
-                summary = {
-                    "case": i + 1,
-                    "category": category,
-                    "passed": False,
-                    "error": error,
-                    "capability_tags": case.get("capability_tags", []) if isinstance(case, dict) else [],
-                }
-                if category != "hidden":
-                    input_value = case.get("input", case.get("args", case.get("kwargs"))) if isinstance(case, dict) else None
-                    expected_value = case.get("expected") if isinstance(case, dict) else None
-                    summary.update(
-                        {
-                            "input": input_value,
-                            "inputDisplay": display_value(input_value),
-                            "expected": expected_value,
-                            "expectedDisplay": result.get("expectedDisplay") or display_value(expected_value),
-                            "expected_repr": result.get("expected_repr", ""),
-                            "actualDisplay": result.get("actualDisplay"),
-                            "actual_repr": result.get("actual_repr", ""),
-                        }
-                    )
                 failed_case_summaries.append(summary)
         return {
             "all_passed": passed_count == len(test_cases),
@@ -977,9 +1038,10 @@ class Handler(BaseHTTPRequestHandler):
             "total_public_count": total_public_count,
             "passed_hidden_count": passed_hidden_count,
             "total_hidden_count": total_hidden_count,
+            "case_summaries": case_summaries,
             "failed_case_summaries": failed_case_summaries,
             "failure_types": failure_types,
-            "results": failed_case_summaries,
+            "results": case_summaries,
         }
 
     def _run_function_case(self, code, function_name, case, timeout):

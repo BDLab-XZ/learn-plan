@@ -15,6 +15,7 @@ from learn_core.quality_review import apply_quality_envelope, build_traceability
 from learn_core.text_utils import normalize_string_list, sanitize_filename as core_sanitize_filename
 from learn_core.topic_family import detect_topic_family_from_configs as core_detect_topic_family_from_configs, infer_domain_from_configs as core_infer_domain_from_configs
 from learn_feedback import apply_approval_patch_decisions, consume_approved_patches, write_patch_queue
+from learn_knowledge import build_default_knowledge_state, load_knowledge_state, resolve_knowledge_paths, save_knowledge_state
 from learn_materials import (
     build_default_material_entries as materials_build_default_material_entries,
     build_materials_index as materials_build_materials_index,
@@ -637,9 +638,9 @@ TOPIC_FAMILIES = {
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate or update learn-plan.md for learn-plan workflow")
-    parser.add_argument("--topic", required=True, help="学习主题")
-    parser.add_argument("--goal", required=True, help="学习目的")
-    parser.add_argument("--level", required=True, help="当前水平")
+    parser.add_argument("--topic", help="学习主题")
+    parser.add_argument("--goal", help="学习目的")
+    parser.add_argument("--level", help="当前水平")
     parser.add_argument("--schedule", default="未指定", help="时间/频率约束")
     parser.add_argument("--preference", default="混合", help="学习偏好：偏题海 / 偏讲解 / 偏测试 / 混合")
     parser.add_argument("--plan-path", default="learn-plan.md", help="学习计划文件路径")
@@ -653,6 +654,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--enable-semantic-review", action="store_true", help="在确定性检查通过后启用 LLM 语义审查（advisory，不硬阻塞）")
     parser.add_argument("--search-context-json", help="research 阶段的 web search 结果 JSON 文件路径")
     parser.add_argument("--confirm-research-review", action="store_true", help="将当前 research report 标记为用户已确认，可继续进入 diagnostic")
+    parser.add_argument("--confirm-knowledge-map", action="store_true", help="确认 knowledge-map.md，将 knowledge-state.json 状态推进为 active")
     parser.add_argument("--stage-candidate-json", help="由外部 harness/subagent 生成的 stage candidate JSON 文件路径；提供后由 Python 消费并推进 gate")
     parser.add_argument("--stage-review-json", help="由外部 harness/subagent 生成的 semantic review JSON 文件路径；仅补充 semantic_issues / improvement_suggestions")
     parser.add_argument("--planning-candidate-json", help="由外部 harness/subagent 生成的 planning candidate JSON 文件路径；提供后由 Python 消费并推进 gate")
@@ -2063,6 +2065,59 @@ def review_public_plan_markdown(markdown: str) -> list[str]:
     return planning_review_public_plan_markdown(markdown)
 
 
+def confirm_knowledge_map(plan_path: Path) -> dict[str, Any]:
+    paths = resolve_knowledge_paths(plan_path)
+    state = load_knowledge_state(plan_path)
+    if not state:
+        raise FileNotFoundError(f"未找到 knowledge-state.json: {paths['knowledge_state']}")
+    previous_status = str(state.get("status") or "draft")
+    state["status"] = "active"
+    history = state.get("history") if isinstance(state.get("history"), list) else []
+    history.append(
+        {
+            "event": "knowledge_map_confirmed",
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "source": "/learn-plan",
+            "previous_status": previous_status,
+            "new_status": "active",
+        }
+    )
+    state["history"] = history[-100:]
+    written = save_knowledge_state(plan_path, state)
+    return {"previous_status": previous_status, "new_status": "active", "paths": written}
+
+
+def write_knowledge_artifacts(
+    plan_path: Path,
+    *,
+    topic: str,
+    goal: str,
+    level: str,
+    schedule: str,
+    preference: str,
+    planning: dict[str, Any] | None = None,
+    research: dict[str, Any] | None = None,
+    diagnostic: dict[str, Any] | None = None,
+) -> dict[str, Path]:
+    paths = resolve_knowledge_paths(plan_path)
+    existing_state = load_knowledge_state(plan_path) if paths["knowledge_state"].exists() else None
+    if existing_state:
+        if not paths["knowledge_map"].exists():
+            save_knowledge_state(plan_path, existing_state)
+        return paths
+    state = build_default_knowledge_state(
+        topic=topic,
+        goal=goal,
+        level=level,
+        schedule=schedule,
+        preference=preference,
+        planning=planning,
+        research=research,
+        diagnostic=diagnostic,
+    )
+    return save_knowledge_state(plan_path, state)
+
+
 def group_topics_for_segments(focus_topics: list[str], *, chunk_size: int = 3) -> list[list[str]]:
     return materials_group_topics_for_segments(focus_topics, chunk_size=chunk_size)
 
@@ -2672,14 +2727,25 @@ def launch_diagnostic_session(
 
 def main() -> int:
     args = parse_args()
-    topic = args.topic.strip()
-    goal = args.goal.strip()
-    level = args.level.strip()
+    plan_path = Path(args.plan_path).expanduser().resolve()
+    if args.confirm_knowledge_map:
+        result = confirm_knowledge_map(plan_path)
+        print(f"knowledge-map 已确认：{result['previous_status']} -> {result['new_status']}")
+        print(f"knowledge-state：{result['paths']['knowledge_state']}")
+        print(f"knowledge-map：{result['paths']['knowledge_map']}")
+        if args.stdout_json:
+            print(json.dumps({"knowledge_map_confirmed": True, "previous_status": result["previous_status"], "new_status": result["new_status"]}, ensure_ascii=False))
+        return 0
+    missing_required = [name for name in ("topic", "goal", "level") if not str(getattr(args, name) or "").strip()]
+    if missing_required:
+        print("缺少必要参数：" + "、".join(f"--{name}" for name in missing_required), file=sys.stderr)
+        return 2
+    topic = str(args.topic or "").strip()
+    goal = str(args.goal or "").strip()
+    level = str(args.level or "").strip()
     schedule = (args.schedule or "未指定").strip() or "未指定"
     preference = normalize_preference(args.preference)
     requested_mode = args.mode
-
-    plan_path = Path(args.plan_path).expanduser().resolve()
     if resolve_learning_root(plan_path) == Path.home() and not args.force_home_root:
         print("WARNING: 学习根目录解析为用户主目录，建议 --plan-path 指定项目子目录", file=sys.stderr)
         print("如确认在主目录创建，请添加 --force-home-root", file=sys.stderr)
@@ -3079,6 +3145,17 @@ def main() -> int:
         else:
             write_text(plan_path, rendered)
             write_json(materials_index, materials_data)
+            write_knowledge_artifacts(
+                plan_path,
+                topic=topic,
+                goal=goal,
+                level=level,
+                schedule=schedule,
+                preference=preference,
+                planning=planning_artifact,
+                research=research,
+                diagnostic=diagnostic,
+            )
 
     download_result = None
     should_download = allow_formal_plan_write and not args.skip_material_download

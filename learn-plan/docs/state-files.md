@@ -16,6 +16,8 @@
 ```text
 <root>/
 ├── learn-plan.md
+├── knowledge-map.md
+├── knowledge-state.json
 ├── learn-today-YYYY-MM-DD.md
 ├── materials/
 │   └── index.json
@@ -53,6 +55,8 @@
 | 文件 | 类型 | 主要写入者 | 主要读取者 | 允许用户直接编辑 | 职责 |
 | --- | --- | --- | --- | --- | --- |
 | `learn-plan.md` | 正式长期状态 | `/learn-plan finalize`、已批准 patch | `/learn-today`、`/learn-test`、update | 可以 | 用户可读长期 curriculum 主文档 |
+| `knowledge-map.md` | 知识图谱视图 | `/learn-plan finalize`、已批准 graph diff | 用户、`/learn-plan`、`/learn-today`、`/learn-test` | 可以提出意见，不直接改 mastery | 用户可读的 2–3 层知识图谱、关键依赖、coverage 和 DAG 校验摘要 |
+| `knowledge-state.json` | 知识点状态 | `/learn-plan finalize`、`/learn-today` update、`/learn-test` update、已批准 graph diff | `/learn-today`、`/learn-test`、update | 不建议；禁止手动改 mastery | 底层知识点 mastery、confidence、target、required evidence、evidence log 与 history 权威源 |
 | `materials/index.json` | 材料状态 | planning/materials/downloader | runtime/materials/downloader | 谨慎 | 材料索引、角色、segment、缓存状态 |
 | `sessions/*/questions.json` | session 输入 | runtime | 前端/server/update | 不建议 | 题目、上下文、材料引用 |
 | `sessions/*/progress.json` | session 事实 | 前端/server/bootstrap/update/evidence CLI | update/runtime | 不建议 | 答题历史、统计、课前复习、完成信号、复盘摘要、掌握判断 |
@@ -115,7 +119,33 @@ update 脚本可以追加：
 - `学习记录`
 - `测试记录`
 
-## 3.2 materials/index.json
+## 3.2 knowledge-map.md 与 knowledge-state.json
+
+### 职责
+
+`knowledge-map.md` 与 `knowledge-state.json` 与 `learn-plan.md` 同目录，是正式长期知识状态层：
+
+- `knowledge-map.md` 面向用户审阅，展示 2–3 层知识图谱、核心叶子粒度、关键依赖、coverage report、DAG 校验和 initial diagnostic blueprint。
+- `knowledge-state.json` 面向 skill 精确读写，保存节点、边、底层知识点 mastery / confidence / target mastery / required evidence、evidence log 与 history。
+
+### 写入规则
+
+允许写入主体图谱的场景：
+1. `/learn-plan finalize` 首次生成正式计划时同步生成初始知识图谱，状态为 `draft`。
+2. 用户确认图谱后，状态可进入 `confirmed` / `active`。
+3. 用户提出图谱缺漏、依赖错误或粒度问题时，skill 先生成 graph diff，经用户确认后归一化写入。
+4. `/learn-today` 与 `/learn-test` 只能按 session evidence 更新底层知识点状态，不得静默重写图谱结构。
+
+不允许：
+- 用户直接覆盖 `mastery`。
+- 上层 domain/topic 节点维护真实 `mastery`；只能展示由底层节点汇总出的 `derived_mastery`。
+- update 脚本未经用户确认改阶段路线、材料主线或图谱结构。
+
+### 迁移与 commit 边界
+
+目标变更时，不支持多个并行目标；旧目标进入 `history`，保留已有底层 mastery 与 evidence，再重算新目标下的 relevance、target_mastery 与 required evidence。若学习根目录是 git repo，学习/测试 session 更新应按 session 原子提交相关状态变化；非 git 目录不报错，降级为 `evidence_log` 与 `history` 记录。
+
+## 3.3 materials/index.json
 
 ### 职责
 
@@ -382,19 +412,21 @@ patch 状态：
 -> workflow engine gate
 -> planning system
 -> finalize
--> learn-plan.md + materials/index.json
+-> learn-plan.md + knowledge-map.md + knowledge-state.json + materials/index.json
 ```
 
-只有 `finalize` 通过 gate 后才写正式主产物。
+只有 `finalize` 通过 gate 后才写正式主产物。初始 `knowledge-state.json` 为 `draft`，进入初始 `/learn-test` 前需要用户确认 `knowledge-map.md`。
 
 ## 7.2 `/learn-today` / `/learn-test`
 
 ```text
 learn-plan.md
++ knowledge-state.json
 + materials/index.json
 + learner_model.json
 + recent sessions/*/progress.json
 + 用户 check-in
+-> lesson_target_slice 或 test_coverage_slice
 -> session plan
 -> learn-today-YYYY-MM-DD.md（today 主路径）
 -> questions.json
@@ -402,7 +434,7 @@ learn-plan.md
 -> 题集.html + server.py
 ```
 
-运行时只能基于正式计划和反馈状态生成 session，不应修改 workflow 中间态。`/learn-today` 生成新课前必须做课前历史复习并保存 `pre_session_review`；session 启动后，终端学习交互写入 `interaction_events.jsonl`。
+运行时只能基于正式计划、知识状态和反馈状态生成 session，不应修改 workflow 中间态。`/learn-today` 生成新课前必须做课前历史复习并保存 `pre_session_review`，并根据 plan pointer + `knowledge-state.json` 做 prerequisite readiness check；`/learn-test` 根据测试目的和题量预算生成 `test_coverage_slice`。session 启动后，终端学习交互写入 `interaction_events.jsonl`。
 
 ## 7.3 复盘回写脚本
 
@@ -413,12 +445,14 @@ questions.json + progress.json
 -> performance / interaction / reflection facts summary
 -> .learn-workflow/session_facts.json
 -> learner_model.json update
+-> knowledge-state.json evidence/mastery/confidence update
+-> knowledge-map.md derived_mastery/coverage refresh
 -> curriculum_patch_queue.json proposed|pending-evidence patch
 -> learn-plan.md 学习记录/测试记录追加
 -> learn-plan.md 当前教学/练习微调追加（仅低风险反馈）
 ```
 
-最终 update 必须发生在用户 completion signal 与 reflection gate 之后。缺 completion/reflection 时，update 只能写事实记录和复习债，不能把 covered scope 直接判为 mastered。主体计划结构只有在 patch 被确认后才修改。
+最终 update 必须发生在用户 completion signal 与 reflection gate 之后。缺 completion/reflection 时，update 只能写事实记录和复习债，不能把 covered scope 直接判为 mastered。写入 `knowledge-state.json` 的 mastery/evidence 前，图谱状态必须为 `confirmed` 或 `active`，并且题目/练习必须显式绑定合法 `knowledge_point_ids` 与 `evidence_types`；`draft` 图谱和缺 evidence binding 的题目不得回写 mastery。主体计划结构只有在 patch 被确认后才修改。
 
 补充说明：若 session 属于 `/learn-plan` diagnostic gate 触发的起始测试，新链路应优先由内部 `learn_test_update.py` 回写流程消费；`learn_today_update.py` 仅保留 today 主路径与 legacy `plan-diagnostic` 兼容。
 
@@ -467,11 +501,13 @@ materials/index.json
 ## 9. 不变量
 
 1. `learn-plan.md` 是正式长期 curriculum 主文档。
-2. `.learn-workflow/*.json` 是中间态，不替代正式计划。
-3. `progress.json` 是 session 事实，不替代 learner model。
-4. `learner_model.json` 是能力证据，不替代 curriculum。
-5. `curriculum_patch_queue.json` 中的 proposed patch 未确认前不能改正式路线。
-6. `materials/index.json` 的下载字段只能由下载/预处理层维护。
+2. `knowledge-state.json` 是知识点 mastery / confidence / evidence 的权威状态源；`learn-plan.md` 不承载底层 mastery。
+3. `knowledge-map.md` 是用户审阅视图；图谱结构变更必须经用户确认。
+4. `.learn-workflow/*.json` 是中间态，不替代正式计划。
+5. `progress.json` 是 session 事实，不替代 learner model 或 knowledge state。
+6. `learner_model.json` 是能力证据与复习债，不替代 curriculum 或 knowledge state。
+7. `curriculum_patch_queue.json` 中的 proposed patch 未确认前不能改正式路线。
+8. `materials/index.json` 的下载字段只能由下载/预处理层维护。
 
 ---
 

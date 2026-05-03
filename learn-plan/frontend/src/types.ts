@@ -171,6 +171,7 @@ export interface SubmitResult {
   total_public_count?: number
   passed_hidden_count?: number
   total_hidden_count?: number
+  case_summaries?: FailedCaseSummary[]
   failed_case_summaries?: FailedCaseSummary[]
   run_cases?: RunCaseResult[]
   failure_types?: string[]

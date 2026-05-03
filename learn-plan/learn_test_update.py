@@ -13,6 +13,13 @@ from learn_workflow import refresh_workflow_state
 from learn_workflow.contracts import default_workflow_paths
 from learn_workflow.stage_review import review_stage_candidate
 from learn_workflow.workflow_store import resolve_learning_root
+from learn_knowledge import (
+    build_session_knowledge_evidence_items,
+    count_applicable_session_evidence,
+    load_knowledge_state,
+    save_knowledge_state,
+    update_state_from_session_evidence,
+)
 from learn_feedback import (
     append_micro_adjustments,
     build_patch_proposal,
@@ -244,6 +251,42 @@ def load_questions_data(session_dir: Path) -> dict[str, Any]:
 def load_questions_map(questions_data: dict[str, Any]) -> dict[str, dict[str, Any]]:
     items = questions_data.get("questions") or []
     return {item.get("id"): item for item in items if item.get("id")}
+
+
+def update_knowledge_state_from_progress(
+    plan_path: Path,
+    session_dir: Path,
+    progress: dict[str, Any],
+    questions_map: dict[str, dict[str, Any]],
+    summary: dict[str, Any],
+    *,
+    session_type: str = "test",
+) -> dict[str, Any]:
+    state = load_knowledge_state(plan_path)
+    if not state:
+        return {"status": "skipped", "reason": "missing_knowledge_state", "evidence_count": 0}
+    if state.get("status") not in {"confirmed", "active"}:
+        return {"status": "skipped", "reason": "knowledge_state_not_confirmed", "evidence_count": 0}
+    evidence_items = build_session_knowledge_evidence_items(
+        progress,
+        questions_map,
+        session_type=session_type,
+        gate=mastery_gate(progress),
+    )
+    if not evidence_items:
+        return {"status": "skipped", "reason": "no_bound_question_evidence", "evidence_count": 0}
+    applicable_count = count_applicable_session_evidence(state, evidence_items)
+    if applicable_count <= 0:
+        return {"status": "skipped", "reason": "invalid_knowledge_point_binding", "evidence_count": 0}
+    updated_state = update_state_from_session_evidence(
+        state,
+        session_dir=session_dir,
+        session_type=session_type,
+        evidence_items=evidence_items,
+        summary=summary,
+    )
+    save_knowledge_state(plan_path, updated_state)
+    return {"status": "updated", "reason": None, "evidence_count": applicable_count}
 
 
 def is_legacy_plan_diagnostic_session(session: dict[str, Any]) -> bool:
@@ -696,6 +739,8 @@ def main() -> int:
         questions_map = load_questions_map(questions_data)
         summary = summarize_diagnostic_progress(progress, questions_map, semantic_diagnostic=semantic_diagnostic)
         updated_progress = update_diagnostic_state(progress, summary)
+        knowledge_update = update_knowledge_state_from_progress(plan_path, session_dir, updated_progress, questions_map, summary, session_type="test")
+        summary["knowledge_state_update"] = knowledge_update
         write_json(progress_path, updated_progress)
         update_learn_plan_with_diagnostic(plan_path, summary, session_dir)
         write_diagnostic_workflow_artifact(plan_path, summary, questions_data, session_dir, progress=updated_progress)
@@ -722,8 +767,11 @@ def main() -> int:
                 if args.stdout_json:
                     print(json.dumps({"pending_patch_count": pending_count, "suggested_action": "run /learn-plan to review and approve curriculum adjustments"}, ensure_ascii=False))
         return 0
+    questions_map = load_questions_map(questions_data)
     summary = summarize_test_progress(progress, questions_data, semantic_review=semantic_review)
     updated_progress = update_progress_state(progress, summary, questions_data=questions_data)
+    knowledge_update = update_knowledge_state_from_progress(plan_path, session_dir, updated_progress, questions_map, summary, session_type="test")
+    summary["knowledge_state_update"] = knowledge_update
     write_json(progress_path, updated_progress)
     update_learn_plan(plan_path, summary, session_dir)
     feedback_result = write_feedback_artifacts(plan_path, summary, updated_progress, session_dir)

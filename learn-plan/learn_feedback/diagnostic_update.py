@@ -140,6 +140,14 @@ def summarize_diagnostic_progress(
             weaknesses.append(title)
             evidence.append(f"题目《{title}》暴露当前薄弱点")
 
+    mastery_judgement = progress.get("mastery_judgement") if isinstance(progress.get("mastery_judgement"), dict) else {}
+    for gap in normalize_string_list(mastery_judgement.get("blocking_gaps")):
+        if gap not in weaknesses:
+            weaknesses.append(gap)
+        evidence.append(f"用户复盘暴露薄弱点：{gap}")
+    for reinforcement in normalize_string_list(mastery_judgement.get("next_session_reinforcement")):
+        evidence.append(f"用户复盘建议后续强化：{reinforcement}")
+
     current_stage = context.get("current_stage") or snapshot.get("current_stage")
     semantic_valid = semantic_diagnostic_is_valid(semantic_diagnostic)
     semantic_diagnostic = semantic_diagnostic if isinstance(semantic_diagnostic, dict) else {}
@@ -147,6 +155,9 @@ def summarize_diagnostic_progress(
     overall = str(semantic_diagnostic.get("overall") or "").strip() if semantic_valid else ""
     recommended_entry_level = str(semantic_diagnostic.get("recommended_entry_level") or semantic_profile.get("recommended_entry_level") or "").strip() if semantic_valid else ""
     if semantic_valid:
+        round_index = semantic_profile.get("round_index") or semantic_diagnostic.get("round_index") or round_index
+        max_rounds = semantic_profile.get("max_rounds") or semantic_diagnostic.get("max_rounds") or max_rounds
+        questions_per_round = semantic_profile.get("questions_per_round") or semantic_diagnostic.get("questions_per_round") or questions_per_round
         if "follow_up_needed" in semantic_diagnostic:
             follow_up_needed = bool(semantic_diagnostic.get("follow_up_needed"))
         elif "follow_up_needed" in semantic_profile:

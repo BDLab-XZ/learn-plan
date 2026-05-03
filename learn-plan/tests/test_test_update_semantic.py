@@ -13,6 +13,7 @@ if str(SKILL_DIR) not in sys.path:
     sys.path.insert(0, str(SKILL_DIR))
 
 import learn_test_update
+from learn_knowledge import build_default_knowledge_state, save_knowledge_state
 
 
 class TestUpdateSemanticTest(unittest.TestCase):
@@ -33,10 +34,14 @@ class TestUpdateSemanticTest(unittest.TestCase):
             },
         }
 
-    def _questions_data(self) -> dict:
+    def _questions_data(self, *, knowledge_point_id: str | None = None) -> dict:
+        q1 = {"id": "q1", "title": "变量赋值", "category": "concept", "tags": ["变量"]}
+        if knowledge_point_id:
+            q1["knowledge_point_ids"] = [knowledge_point_id]
+            q1["evidence_types"] = ["explanation"]
         return {
             "questions": [
-                {"id": "q1", "title": "变量赋值", "category": "concept", "tags": ["变量"]},
+                q1,
                 {"id": "q2", "title": "条件判断", "category": "concept", "tags": ["条件"]},
             ],
             "plan_source": {"covered": ["变量"], "weakness_focus": ["条件判断"]},
@@ -110,6 +115,115 @@ class TestUpdateSemanticTest(unittest.TestCase):
             self.assertEqual(learning_state.get("weaknesses"), ["条件判断分支推理"])
             self.assertEqual(learning_state.get("next_actions"), ["重做条件判断阶段题"])
             self.assertIn("semantic review 状态：ok", plan_path.read_text(encoding="utf-8"))
+
+    def test_knowledge_state_update_skips_draft_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            session_dir = root / "session"
+            session_dir.mkdir()
+            plan_path = root / "learn-plan.md"
+            plan_path.write_text("# Test Plan\n", encoding="utf-8")
+            state = build_default_knowledge_state(topic="Python 基础", goal="掌握变量赋值", level="零基础", schedule="每天", preference="混合")
+            point = next(node for node in state["nodes"] if node["level"] == "knowledge_point")
+            save_knowledge_state(plan_path, state)
+            progress = self._progress()
+            progress["completion_signal"] = {"status": "received"}
+            progress["mastery_judgement"] = {"status": "mastered", "prompting_level": "none"}
+            questions_map = learn_test_update.load_questions_map(self._questions_data(knowledge_point_id=point["id"]))
+
+            result = learn_test_update.update_knowledge_state_from_progress(plan_path, session_dir, progress, questions_map, self._semantic_review())
+
+            self.assertEqual(result, {"status": "skipped", "reason": "knowledge_state_not_confirmed", "evidence_count": 0})
+            saved_state = json.loads((root / "knowledge-state.json").read_text(encoding="utf-8"))
+            saved_point = next(node for node in saved_state["nodes"] if node["id"] == point["id"])
+            self.assertEqual(saved_point["mastery"], 0)
+            self.assertEqual(saved_state["evidence_log"], [])
+
+    def test_knowledge_state_update_skips_missing_evidence_type_binding(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            session_dir = root / "session"
+            session_dir.mkdir()
+            plan_path = root / "learn-plan.md"
+            plan_path.write_text("# Test Plan\n", encoding="utf-8")
+            state = build_default_knowledge_state(topic="Python 基础", goal="掌握变量赋值", level="零基础", schedule="每天", preference="混合")
+            point = next(node for node in state["nodes"] if node["level"] == "knowledge_point")
+            state["status"] = "active"
+            save_knowledge_state(plan_path, state)
+            progress = self._progress()
+            progress["completion_signal"] = {"status": "received"}
+            progress["mastery_judgement"] = {"status": "mastered", "prompting_level": "none"}
+            questions_data = self._questions_data(knowledge_point_id=point["id"])
+            questions_data["questions"][0].pop("evidence_types")
+            questions_map = learn_test_update.load_questions_map(questions_data)
+
+            result = learn_test_update.update_knowledge_state_from_progress(plan_path, session_dir, progress, questions_map, self._semantic_review())
+
+            self.assertEqual(result, {"status": "skipped", "reason": "no_bound_question_evidence", "evidence_count": 0})
+            saved_state = json.loads((root / "knowledge-state.json").read_text(encoding="utf-8"))
+            saved_point = next(node for node in saved_state["nodes"] if node["id"] == point["id"])
+            self.assertEqual(saved_point["mastery"], 0)
+            self.assertEqual(saved_state["evidence_log"], [])
+
+    def test_knowledge_state_update_skips_invalid_point_binding(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            session_dir = root / "session"
+            session_dir.mkdir()
+            plan_path = root / "learn-plan.md"
+            plan_path.write_text("# Test Plan\n", encoding="utf-8")
+            state = build_default_knowledge_state(topic="Python 基础", goal="掌握变量赋值", level="零基础", schedule="每天", preference="混合")
+            point = next(node for node in state["nodes"] if node["level"] == "knowledge_point")
+            state["status"] = "active"
+            save_knowledge_state(plan_path, state)
+            progress = self._progress()
+            progress["completion_signal"] = {"status": "received"}
+            progress["mastery_judgement"] = {"status": "mastered", "prompting_level": "none"}
+            questions_map = learn_test_update.load_questions_map(self._questions_data(knowledge_point_id="missing-point"))
+
+            result = learn_test_update.update_knowledge_state_from_progress(plan_path, session_dir, progress, questions_map, self._semantic_review())
+
+            self.assertEqual(result, {"status": "skipped", "reason": "invalid_knowledge_point_binding", "evidence_count": 0})
+            saved_state = json.loads((root / "knowledge-state.json").read_text(encoding="utf-8"))
+            saved_point = next(node for node in saved_state["nodes"] if node["id"] == point["id"])
+            self.assertEqual(saved_point["mastery"], 0)
+            self.assertEqual(saved_state["evidence_log"], [])
+
+    def test_cli_updates_knowledge_state_when_questions_are_bound(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            session_dir = root / "session"
+            session_dir.mkdir()
+            plan_path = root / "learn-plan.md"
+            plan_path.write_text("# Test Plan\n", encoding="utf-8")
+            state = build_default_knowledge_state(topic="Python 基础", goal="掌握变量赋值", level="零基础", schedule="每天", preference="混合")
+            point = next(node for node in state["nodes"] if node["level"] == "knowledge_point")
+            state["status"] = "active"
+            save_knowledge_state(plan_path, state)
+            progress = self._progress()
+            progress["completion_signal"] = {"status": "received"}
+            progress["mastery_judgement"] = {"status": "mastered", "prompting_level": "none"}
+            progress_path = session_dir / "progress.json"
+            progress_path.write_text(json.dumps(progress, ensure_ascii=False), encoding="utf-8")
+            questions_path = session_dir / "questions.json"
+            questions_path.write_text(json.dumps(self._questions_data(knowledge_point_id=point["id"]), ensure_ascii=False), encoding="utf-8")
+            semantic_path = root / "semantic-review.json"
+            semantic_path.write_text(json.dumps(self._semantic_review(), ensure_ascii=False), encoding="utf-8")
+
+            with patch.object(sys, "argv", [
+                "learn_test_update.py",
+                "--session-dir", str(session_dir),
+                "--plan-path", str(plan_path),
+                "--semantic-review-json", str(semantic_path),
+            ]), patch("learn_test_update.refresh_workflow_state", return_value={}), patch("sys.stdout", new_callable=io.StringIO):
+                exit_code = learn_test_update.main()
+
+            self.assertEqual(exit_code, 0)
+            saved_state = json.loads((root / "knowledge-state.json").read_text(encoding="utf-8"))
+            saved_point = next(node for node in saved_state["nodes"] if node["id"] == point["id"])
+            self.assertEqual(saved_point["mastery"], 10)
+            self.assertEqual(saved_state["evidence_log"][0]["knowledge_point_ids"], [point["id"]])
+            self.assertTrue((root / "knowledge-map.md").exists())
 
 
 if __name__ == "__main__":

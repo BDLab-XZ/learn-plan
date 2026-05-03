@@ -88,7 +88,7 @@ Phase 1: 深挖 + 分析（合并 clarification + research）
 
 ### Phase 2：起点检测
 
-复用 /learn-test 的 runtime，通过网页 session 对用户进行水平诊断。
+复用 /learn-test 的 runtime，通过网页 session 对用户进行水平诊断。进入起点检测前，必须已有可审阅的 `knowledge-map.md` 与 `knowledge-state.json` 草案；初始测试题生成属于 `/learn-test`，但测试范围应来自知识图谱的核心叶子节点。
 
 **进入条件**：
 - Phase 1 完成
@@ -130,11 +130,13 @@ Phase 1: 深挖 + 分析（合并 clarification + research）
 
 **3b：正式落盘**
 
-用户确认后，生成正式产物并建立目录结构：
+用户确认后，生成正式产物并建立目录结构。正式落盘必须同步生成知识状态双文件：`knowledge-map.md` 给用户确认，`knowledge-state.json` 给 skill 持续读写。
 
 ```text
 <学习根目录>/
 ├── learn-plan.md              # 正式长期学习计划
+├── knowledge-map.md           # 用户可审阅的 2–3 层知识图谱、关键依赖与 coverage 摘要
+├── knowledge-state.json       # skill 读写的知识点 mastery/confidence/evidence 权威状态
 ├── reports/                   # Phase 1/3 中间报告
 │   ├── purpose-analysis.html  # 目的分析报告（long-output-html）
 │   └── plan-draft.html        # 计划草案（long-output-html）
@@ -158,7 +160,7 @@ Phase 1: 深挖 + 分析（合并 clarification + research）
 learn-plan.md 必须能被 /learn-today 精确消费，包含：
 - 稳定的 section 结构
 - 明确的阶段划分与掌握标准
-- **进度指针区块**：/learn-today 读到这里就能定位今天该学什么
+- **进度指针区块**：/learn-today 读到这里就能定位今天该学什么；具体底层知识点由 `/learn-today` 结合 `knowledge-state.json` 生成 lesson target slice
 - 可追加的"学习记录"和"测试记录"区块
 - **planning state 格式必须遵循 `docs/planning-state-format.md`**，否则 runtime 会将计划误判为 gate 状态
 - **叙事设定区块**（新增）：定义贯穿整个学习计划的故事主线。包含主角背景（参考用户真实画像，但塑造为第三人称角色并起名）、主线动机、叙事风格（默认第三人称）、人物在各阶段的成长线。每节 /learn-today 课件都是这个故事的一章
@@ -181,6 +183,8 @@ learn-plan.md 必须能被 /learn-today 精确消费，包含：
 ## 2. 动态计划调整
 
 /learn-today 与 /learn-test 的 update 必须基于三层证据：performance evidence（答题表现）、interaction evidence（终端提问/误解/反馈/纠偏）、reflection evidence（用户明确完成后的复盘追问）。没有 completion signal 与 reflection evidence 时，不得把 covered scope 直接写入 mastered scope。
+
+知识点掌握度更新只能写入 `knowledge-state.json`：底层知识点维护真实 `mastery` / `confidence`，上层节点只展示 `derived_mastery`。用户可以反馈图谱缺漏或依赖错误，但 skill 必须先生成 diff 并在用户确认后写入；用户不能手动覆盖 mastery。
 
 调整分两层：
 1. **低风险微调**：题目难度、题型比例、讲解方式、节奏、例子风格、反馈方式等，可由 update 追加到 `learn-plan.md` 的“当前教学/练习微调”，供后续 `/learn-today` / `/learn-test` 默认采用。

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import io
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -10,6 +13,7 @@ if str(SKILL_DIR) not in sys.path:
     sys.path.insert(0, str(SKILL_DIR))
 
 import learn_plan
+from learn_knowledge import build_default_knowledge_state, save_knowledge_state
 from learn_workflow.gates import formal_plan_write_blockers
 from learn_workflow.state_machine import build_workflow_state
 
@@ -127,6 +131,28 @@ class PlanningArtifactGateTest(unittest.TestCase):
 
     def _curriculum(self) -> dict:
         return learn_plan.build_curriculum("Python", "零基础", "混合")
+
+    def test_confirm_knowledge_map_marks_state_active_without_required_goal_args(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            plan_path = root / "learn-plan.md"
+            plan_path.write_text("# Test Plan\n", encoding="utf-8")
+            state = build_default_knowledge_state(topic="Python", goal="通过期末考试", level="零基础", schedule="每天", preference="混合")
+            self.assertEqual(state["status"], "draft")
+            save_knowledge_state(plan_path, state)
+
+            with patch.object(sys, "argv", [
+                "learn_plan.py",
+                "--plan-path", str(plan_path),
+                "--confirm-knowledge-map",
+            ]), patch("sys.stdout", new_callable=io.StringIO):
+                exit_code = learn_plan.main()
+
+            self.assertEqual(exit_code, 0)
+            saved_state = json.loads((root / "knowledge-state.json").read_text(encoding="utf-8"))
+            self.assertEqual(saved_state["status"], "active")
+            self.assertEqual(saved_state["history"][-1]["event"], "knowledge_map_confirmed")
+            self.assertTrue((root / "knowledge-map.md").exists())
 
     def test_missing_planning_candidate_does_not_build_deterministic_plan_candidate(self) -> None:
         with patch("learn_plan.build_plan_candidate", side_effect=AssertionError("deterministic planning fallback should not run")):

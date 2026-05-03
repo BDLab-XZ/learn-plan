@@ -139,7 +139,7 @@ function mapPublicTest(testCase: RuntimeTestCase, index: number): TestCaseRecord
   }
 }
 
-function mapFailedCase(testCase: FailedCaseSummary, index: number): TestCaseRecord {
+function mapCaseSummary(testCase: FailedCaseSummary, index: number): TestCaseRecord {
   const inputValue = caseInput(testCase)
   return {
     name: `${testCase.category === 'hidden' ? '隐藏' : '公开'}测试 ${testCase.case || index + 1}`,
@@ -149,7 +149,7 @@ function mapFailedCase(testCase: FailedCaseSummary, index: number): TestCaseReco
     inputDisplay: testCase.inputDisplay,
     expectedDisplay: testCase.expectedDisplay,
     actualDisplay: testCase.actualDisplay,
-    passed: false,
+    passed: Boolean(testCase.passed),
     error: testCase.error,
     stdout: stringifyValue(testCase.stdout),
     stderr: stringifyValue(testCase.stderr),
@@ -211,21 +211,23 @@ function buildTerminalOutput(record: Pick<SubmitRecord, 'action' | 'message' | '
       testCase.error ? `错误：${testCase.error}` : '',
     ].filter(Boolean).join('\n')).join('\n\n')
   }
-  const failed = record.testCases.filter((testCase) => !testCase.passed)
-  if (failed.length) {
-    return failed.map((testCase) => [
+  if (record.testCases.length) {
+    return record.testCases.map((testCase) => [
+      `${testCase.name}：${testCase.passed ? '通过' : '未通过'}`,
       `测试输入：${testCase.input}`,
       `期望输出：${testCase.expected}`,
       `实际输出：${testCase.actual || '(无输出)'}`,
       testCase.error ? `错误：${testCase.error}` : '',
     ].filter(Boolean).join('\n')).join('\n\n')
   }
-  return record.action === 'run' ? '运行完成，但没有可展示的样例输出。' : '本次提交没有失败样例输出。'
+  return record.action === 'run' ? '运行完成，但没有可展示的样例输出。' : '本次提交没有可展示的用例输出。'
 }
 
 function resultToRecord(questionId: string, action: SubmitRecord['action'], result: SubmitResult, publicTests?: RuntimeTestCase[]): SubmitRecord {
-  const failed = (result.failed_case_summaries || []).map(mapFailedCase)
-  const passed = buildPassedCases(result)
+  const allCases = (result.case_summaries || []).map(mapCaseSummary)
+  const failed = (result.failed_case_summaries || []).map(mapCaseSummary)
+  const passed = allCases.length ? [] : buildPassedCases(result)
+  const testCases = allCases.length ? allCases : [...passed, ...failed]
   const runCases = mapRunCases(result, publicTests)
   const ok = result.all_passed ?? result.is_correct ?? (runCases.length ? runCases.every((item) => item.passed !== false && !item.error) : result.ok ?? !result.error)
   const totalPublic = result.total_public_count ?? 0
@@ -241,7 +243,7 @@ function resultToRecord(questionId: string, action: SubmitRecord['action'], resu
     status: ok ? 'passed' : 'failed',
     message: result.error || (detail ? `${ok ? '通过' : '未通过'}：${detail}` : ok ? '运行完成。' : '答案未通过。'),
     createdAt: formatTime(result.submitted_at),
-    testCases: [...passed, ...failed],
+    testCases,
     runCases,
     failure_types: result.failure_types,
   }

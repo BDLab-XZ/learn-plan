@@ -27,6 +27,8 @@
    - `workflow_state.json`
 2. **正式长期状态契约**
    - `learn-plan.md`
+   - `knowledge-map.md`
+   - `knowledge-state.json`
    - `materials/index.json`
 3. **执行期 session 契约**
    - `questions.json`
@@ -41,10 +43,11 @@
 原则：
 - workflow 中间态用于推进 `/learn-plan`，**不能替代** 正式 `learn-plan.md`。
 - `learn-plan.md` 是用户可读的正式 curriculum 主文档，**只允许** 在 `finalize` 或已批准 patch 落地时更新主体结构。
+- `knowledge-map.md` 是用户审阅知识图谱的正式视图；`knowledge-state.json` 是底层知识点 mastery / confidence / evidence 的权威状态源。
 - `progress.json` 记录 session 事实，不承担长期工作流状态职责。
 - `interaction_events.jsonl` 记录终端学习交互证据，只保存结构化摘要和必要短摘录，不保存完整聊天。
 - `reflection.json` 记录用户明确完成后的 update 前复盘结果；没有 completion signal 时不应生成最终 reflection。
-- `learner_model.json` 保存能力证据与复习债，但不是新的正式 curriculum 主状态源。
+- `learner_model.json` 保存能力证据与复习债，但不是新的正式 curriculum 主状态源，也不替代 `knowledge-state.json` 的知识点掌握度。
 
 ---
 
@@ -106,6 +109,80 @@
 - LLM 可以生成 candidate 与 reviewer 输入，但不能直接替代正式长期状态。
 - deterministic gate 继续拥有最终放行权；`quality_review.valid=true` 不等于允许 `finalize`。
 - 正式 `learn-plan.md` 只能由 renderer + gate 写出，不允许由 LLM 直接产出最终正文并绕过 gate。
+
+### 2.5 knowledge-map.md 与 knowledge-state.json
+
+`/learn-plan` 在目标和路线足够明确后，必须与 `learn-plan.md` 同目录维护双文件知识状态层：
+
+- `knowledge-map.md`：给用户审阅，展示 2–3 层知识图谱、核心叶子粒度、关键依赖、coverage report、DAG 校验和 diagnostic blueprint。
+- `knowledge-state.json`：给 skill 精确读写，保存节点、边、mastery、confidence、required evidence、evidence log 与 history。
+
+第一版 `knowledge-state.json` 顶层结构：
+
+```json
+{
+  "contract_version": "learn-plan.knowledge-state.v1",
+  "schema_version": "1.0",
+  "goal": {},
+  "status": "draft|confirmed|active|migrated",
+  "nodes": [],
+  "edges": [],
+  "coverage_report": {},
+  "dag_validation": {},
+  "diagnostic_blueprint": {},
+  "evidence_log": [],
+  "history": []
+}
+```
+
+节点分三层：`domain | topic | knowledge_point`。上层节点只允许展示只读 `derived_mastery`；只有底层 `knowledge_point` 可以维护真实 `mastery`、`confidence`、`target_mastery`、`required_evidence_types`、`status_label`、`last_studied`、`last_tested` 与 `evidence_refs`。
+
+底层知识点 mastery 标签固定为：`0=未学习`，`1-59=不熟悉`，`60-79=已了解`，`80-99=已熟悉`，`100=已熟练掌握`。用户不能直接修正 mastery；所有 mastery 更新必须来自学习、测试、交互或复盘证据，并追加 evidence。`knowledge-state.json` 处于 `draft` 时不得回写 mastery/evidence；只有用户确认到 `confirmed` 或 `active` 后，且题目显式绑定合法 `knowledge_point_ids` 与 `evidence_types`，update 脚本才可写入知识点状态。
+
+边结构至少包含：`from`、`to`、`type=hard|soft|recommended|diagnostic`、`reason`、`source`、`confidence`。DAG 校验必须覆盖节点唯一、parent 合法、edge 指向存在、无环、底层知识点有 required evidence、上层节点不写真实 mastery。
+
+初始图谱采用“核心叶子”粒度：主线内容拆到底层可学习、可测试、可更新 mastery 的核心叶子；边缘 API 参数、罕见选项和细碎题型先保留为 `expandable_subpoints` / `notes`，只有目标强相关、用户反馈缺漏、测试暴露问题或学习中反复卡住时才升级为独立底层节点。
+
+#### lesson target slice
+
+`/learn-today` 应根据 plan pointer 与 `knowledge-state.json` 生成本节 `lesson_target_slice`：
+
+```json
+{
+  "session_goal": "",
+  "plan_pointer": {"stage": "", "topic": ""},
+  "primary_points": [],
+  "prerequisite_points": [],
+  "review_points": [],
+  "bridge_points": [],
+  "blocked_points": [],
+  "evidence_targets": [],
+  "material_segments": [],
+  "readiness": {}
+}
+```
+
+进入新知识点前必须做 prerequisite readiness check：`mastery 达标 + confidence 足够 + required evidence 类型足够 + 最近无明显反证`。hard prerequisite 不足时应局部补前置；soft prerequisite 可边学边补；diagnostic prerequisite 不阻塞但需要小题校准。
+
+#### test coverage slice
+
+`/learn-test` 应根据测试目的、轮次和题量预算生成 `test_coverage_slice`：
+
+```json
+{
+  "test_goal": "",
+  "coverage_budget": {"rounds": 2, "questions_per_round": 5},
+  "selected_points": [],
+  "excluded_points": [],
+  "question_mapping": [],
+  "evidence_types": [],
+  "expected_confidence_update": {}
+}
+```
+
+测试题必须绑定 `knowledge_point_ids`、`evidence_types`、`rubric_by_knowledge_point` 与 `source_trace`。测试结束后按知识点拆分 evidence，不只看整题总分。
+
+图谱漏项、依赖错误、前置缺口、节点过粗/过细或阶段过快/过慢，不允许被 `/learn-today` 或 `/learn-test` 静默重写长期计划；必须先记录 evidence，再生成图谱 diff 或 curriculum patch，经用户确认后写入。
 
 ---
 

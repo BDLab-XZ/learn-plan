@@ -6,8 +6,9 @@ from typing import Any
 
 from learn_core.io import read_json_if_exists as core_read_json_if_exists
 from learn_core.quality_review import apply_quality_envelope, build_traceability_entry, normalize_confidence
-from learn_core.text_utils import normalize_string_list
+from learn_core.text_utils import normalize_int, normalize_string_list
 from learn_core.topic_family import infer_domain as core_infer_domain
+from learn_knowledge import build_lesson_target_slice, build_test_coverage_slice, load_knowledge_state
 from learn_runtime.lesson_builder import (
     build_daily_lesson_plan,
     build_lesson_grounding_context,
@@ -155,6 +156,40 @@ def _load_runtime_context(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def build_knowledge_session_context(args: argparse.Namespace, plan_source: dict[str, Any], plan_path: Path) -> dict[str, Any]:
+    state = load_knowledge_state(plan_path)
+    if not state:
+        if args.session_type == "test":
+            raise ValueError("缺少 knowledge-state.json：请先运行 /learn-plan 生成并确认知识图谱，再启动 /learn-test")
+        return {"knowledge_state_available": False}
+    if args.session_type == "test" and state.get("status") not in {"confirmed", "active"}:
+        raise ValueError("knowledge-state.json 尚未确认：请先在 /learn-plan 中确认 knowledge-map.md，再启动 /learn-test")
+    if args.session_type == "test":
+        rounds = normalize_int(getattr(args, "max_rounds", None) or plan_source.get("max_rounds") or 2) or 2
+        questions_per_round = normalize_int(getattr(args, "questions_per_round", None) or plan_source.get("questions_per_round") or 5) or 5
+        test_goal = str(plan_source.get("today_topic") or plan_source.get("current_stage") or "阶段测试").strip() or "阶段测试"
+        return {
+            "knowledge_state_available": True,
+            "knowledge_state_status": state.get("status"),
+            "test_coverage_slice": build_test_coverage_slice(
+                state,
+                test_goal=test_goal,
+                rounds=rounds,
+                questions_per_round=questions_per_round,
+            ),
+        }
+    return {
+        "knowledge_state_available": True,
+        "knowledge_state_status": state.get("status"),
+        "lesson_target_slice": build_lesson_target_slice(
+            state,
+            stage=plan_source.get("current_stage"),
+            topic=plan_source.get("today_topic") or getattr(args, "today_topic", None),
+            time_budget=getattr(args, "time_budget", None),
+        ),
+    }
+
+
 def build_assessment_context_artifact_from_scope(
     topic: str,
     plan_source: dict[str, Any],
@@ -213,6 +248,8 @@ def build_questions_payload(args: argparse.Namespace, topic: str, plan_text: str
     plan_source["language_policy"] = language_policy
     plan_source["topic"] = topic
     plan_source["domain"] = domain
+    knowledge_context = build_knowledge_session_context(args, plan_source, plan_path)
+    plan_source.update(knowledge_context)
     selected_segments, mastery_targets = select_material_segments(materials, plan_source)
     execution_mode = str(plan_source.get("plan_execution_mode") or "normal")
     if execution_mode in {"clarification", "research", "diagnostic", "test-diagnostic"}:
@@ -238,6 +275,7 @@ def build_questions_payload(args: argparse.Namespace, topic: str, plan_text: str
     lesson_grounding_context["language_policy"] = language_policy
     lesson_grounding_context["question_scope"] = question_scope
     lesson_grounding_context["question_plan"] = question_plan
+    lesson_grounding_context.update(knowledge_context)
     if domain:
         lesson_grounding_context["domain"] = domain
     if args.session_type == "today":
@@ -645,6 +683,10 @@ def build_questions_payload(args: argparse.Namespace, topic: str, plan_text: str
             "question_review": question_review,
             "deterministic_question_review": deterministic_question_review,
             "strict_question_review": strict_question_review,
+            "knowledge_state_available": knowledge_context.get("knowledge_state_available", False),
+            "knowledge_state_status": knowledge_context.get("knowledge_state_status"),
+            "lesson_target_slice": knowledge_context.get("lesson_target_slice"),
+            "test_coverage_slice": knowledge_context.get("test_coverage_slice"),
             "lesson_focus_points": lesson_focus_points,
             "project_tasks": project_tasks,
             "project_blockers": project_blockers,
