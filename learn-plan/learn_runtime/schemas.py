@@ -41,6 +41,9 @@ DIFFICULTY_DEFAULT_SCORES = {
     "upper_medium": 3,
     "hard": 4,
 }
+TRANSFER_DISTANCE_VALUES = {"direct", "near", "far"}
+IMPLEMENTATION_COMPLEXITY_VALUES = {"none", "single_step", "multi_step", "stateful"}
+TRAP_DENSITY_VALUES = {"low", "medium", "high"}
 DIFFICULTY_ALIASES = {
     "easy": "basic",
     "基础": "basic",
@@ -182,6 +185,158 @@ def normalize_difficulty_level(value: Any) -> str | None:
         return None
     key = text.lower().replace("-", "_").replace(" ", "_")
     return DIFFICULTY_ALIASES.get(key) or DIFFICULTY_ALIASES.get(text.lower())
+
+
+def difficulty_rank(value: Any) -> int:
+    level = normalize_difficulty_level(value)
+    if not level:
+        return -1
+    return DIFFICULTY_LEVEL_ORDER.index(level)
+
+
+def compare_difficulty_levels(left: Any, right: Any) -> int:
+    return difficulty_rank(left) - difficulty_rank(right)
+
+
+def _normalize_non_negative_int(value: Any, default: int = 0) -> int:
+    try:
+        result = int(value)
+    except (TypeError, ValueError):
+        return default
+    return result if result >= 0 else default
+
+
+def _normalize_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = str(value or "").strip().lower()
+    return text in {"1", "true", "yes", "y", "是", "需要", "组合", "combined", "combination"}
+
+
+def _normalize_enum(value: Any, allowed: set[str], default: str) -> str:
+    text = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    return text if text in allowed else default
+
+
+def normalize_difficulty_dimensions(value: Any) -> dict[str, Any]:
+    data = value if isinstance(value, dict) else {}
+    return {
+        "knowledge_point_count": _normalize_non_negative_int(data.get("knowledge_point_count"), 0),
+        "requires_concept_combination": _normalize_bool(data.get("requires_concept_combination") or data.get("concept_combination")),
+        "reasoning_steps": _normalize_non_negative_int(data.get("reasoning_steps"), 0),
+        "boundary_condition_count": _normalize_non_negative_int(data.get("boundary_condition_count"), 0),
+        "transfer_distance": _normalize_enum(data.get("transfer_distance"), TRANSFER_DISTANCE_VALUES, "direct"),
+        "implementation_complexity": _normalize_enum(data.get("implementation_complexity"), IMPLEMENTATION_COMPLEXITY_VALUES, "none"),
+        "trap_density": _normalize_enum(data.get("trap_density"), TRAP_DENSITY_VALUES, "low"),
+    }
+
+
+def difficulty_dimensions_present(value: Any) -> bool:
+    return isinstance(value, dict) and any(key in value for key in (
+        "knowledge_point_count",
+        "requires_concept_combination",
+        "concept_combination",
+        "reasoning_steps",
+        "boundary_condition_count",
+        "transfer_distance",
+        "implementation_complexity",
+        "trap_density",
+    ))
+
+
+def validate_difficulty_dimensions(value: Any, *, context: str = "difficulty_dimensions") -> list[str]:
+    if not isinstance(value, dict):
+        return [f"{context}.not_object"]
+    issues: list[str] = []
+    for field in ("knowledge_point_count", "reasoning_steps", "boundary_condition_count"):
+        if field in value:
+            try:
+                number = int(value.get(field))
+            except (TypeError, ValueError):
+                issues.append(f"{context}.{field}_invalid")
+                continue
+            if number < 0:
+                issues.append(f"{context}.{field}_invalid")
+    if "transfer_distance" in value and _normalize_enum(value.get("transfer_distance"), TRANSFER_DISTANCE_VALUES, "") not in TRANSFER_DISTANCE_VALUES:
+        issues.append(f"{context}.transfer_distance_invalid")
+    if "implementation_complexity" in value and _normalize_enum(value.get("implementation_complexity"), IMPLEMENTATION_COMPLEXITY_VALUES, "") not in IMPLEMENTATION_COMPLEXITY_VALUES:
+        issues.append(f"{context}.implementation_complexity_invalid")
+    if "trap_density" in value and _normalize_enum(value.get("trap_density"), TRAP_DENSITY_VALUES, "") not in TRAP_DENSITY_VALUES:
+        issues.append(f"{context}.trap_density_invalid")
+    return issues
+
+
+def infer_min_difficulty_from_dimensions(value: Any) -> str:
+    dimensions = normalize_difficulty_dimensions(value)
+    level = "basic"
+
+    def raise_to(candidate: str) -> None:
+        nonlocal level
+        if compare_difficulty_levels(candidate, level) > 0:
+            level = candidate
+
+    knowledge_points = dimensions["knowledge_point_count"]
+    reasoning_steps = dimensions["reasoning_steps"]
+    boundary_count = dimensions["boundary_condition_count"]
+    if knowledge_points >= 2 or reasoning_steps >= 2 or boundary_count >= 2:
+        raise_to("medium")
+    if dimensions["transfer_distance"] == "near":
+        raise_to("medium")
+    if dimensions["requires_concept_combination"] and knowledge_points >= 2:
+        raise_to("medium")
+    if dimensions["implementation_complexity"] in {"single_step", "multi_step", "stateful"} and (reasoning_steps >= 2 or boundary_count >= 2):
+        raise_to("medium")
+
+    if knowledge_points >= 3 or reasoning_steps >= 4 or boundary_count >= 4:
+        raise_to("upper_medium")
+    if dimensions["requires_concept_combination"] and (knowledge_points >= 3 or reasoning_steps >= 3):
+        raise_to("upper_medium")
+    if dimensions["implementation_complexity"] in {"multi_step", "stateful"}:
+        raise_to("upper_medium")
+    if dimensions["trap_density"] == "high":
+        raise_to("upper_medium")
+
+    if dimensions["transfer_distance"] == "far":
+        raise_to("hard")
+    if dimensions["implementation_complexity"] == "stateful" and (knowledge_points >= 3 or boundary_count >= 3):
+        raise_to("hard")
+    if knowledge_points >= 5 or reasoning_steps >= 6 or boundary_count >= 6:
+        raise_to("hard")
+    return level
+
+
+def _normalize_string_list_value(value: Any) -> list[str]:
+    if isinstance(value, (list, tuple, set)):
+        return [text for item in value if (text := str(item or "").strip())]
+    text = str(value or "").strip()
+    return [text] if text else []
+
+
+def _planned_item_requires_combination(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower().replace("-", "_").replace(" ", "_")
+    return text not in {"", "none", "false", "0", "no", "否", "无需", "不需要", "single", "separate"}
+
+
+def _planned_item_difficulty_dimensions(planned: dict[str, Any]) -> dict[str, Any] | None:
+    raw = planned.get("difficulty_dimensions")
+    if difficulty_dimensions_present(raw):
+        return raw
+    knowledge_ids = _normalize_string_list_value(
+        planned.get("knowledge_point_ids")
+        or planned.get("knowledge_points")
+        or planned.get("target_concepts")
+        or []
+    )
+    if not knowledge_ids and planned.get("combination_requirement") is None:
+        return None
+    return {
+        "knowledge_point_count": len(knowledge_ids),
+        "requires_concept_combination": _planned_item_requires_combination(planned.get("combination_requirement")),
+    }
 
 
 def normalize_question_difficulty_fields(item: dict[str, Any]) -> dict[str, Any]:
@@ -751,6 +906,22 @@ def validate_question_plan_basic(data: dict[str, Any]) -> list[str]:
     for field in ("planned_items", "coverage_matrix", "forbidden_question_types", "generation_guidance", "review_checklist", "evidence"):
         if field in data and not isinstance(data.get(field), list):
             issues.append(f"question_plan.{field}_not_list")
+    planned_items = data.get("planned_items") if isinstance(data.get("planned_items"), list) else []
+    for index, planned in enumerate(planned_items):
+        if not isinstance(planned, dict):
+            issues.append(f"question_plan.planned_items.{index}.not_object")
+            continue
+        target = planned.get("target_difficulty_level") or planned.get("difficulty_level") or planned.get("difficulty")
+        normalized_target = normalize_difficulty_level(target)
+        if target is not None and not normalized_target:
+            issues.append(f"question_plan.planned_items.{index}.target_difficulty_level_invalid")
+        dimensions = _planned_item_difficulty_dimensions(planned)
+        if dimensions is not None:
+            issues.extend(validate_difficulty_dimensions(dimensions, context=f"question_plan.planned_items.{index}.difficulty_dimensions"))
+        if normalized_target and dimensions is not None and not validate_difficulty_dimensions(dimensions):
+            computed = infer_min_difficulty_from_dimensions(dimensions)
+            if compare_difficulty_levels(normalized_target, computed) < 0:
+                issues.append(f"question_plan.planned_items.{index}.target_difficulty_underestimated:{normalized_target}/{computed}")
     for field in ("minimum_pass_shape", "generation_trace"):
         if field in data and not isinstance(data.get(field), dict):
             issues.append(f"question_plan.{field}_not_object")

@@ -102,6 +102,37 @@ class QuestionScopePlanContractTest(unittest.TestCase):
 
         self.assertIn("question_plan.question_mix.count_mismatch", validate_question_plan_basic(plan))
 
+    def test_planned_item_difficulty_dimension_shape_is_validated(self) -> None:
+        plan = self._plan()
+        plan["planned_items"] = [
+            {
+                "item_id": "p1",
+                "target_difficulty_level": "basic",
+                "difficulty_dimensions": {"knowledge_point_count": "many"},
+            }
+        ]
+
+        self.assertIn("question_plan.planned_items.0.difficulty_dimensions.knowledge_point_count_invalid", validate_question_plan_basic(plan))
+
+    def test_planned_item_target_difficulty_level_is_validated(self) -> None:
+        plan = self._plan()
+        plan["planned_items"] = [{"item_id": "p1", "target_difficulty_level": "impossible"}]
+
+        self.assertIn("question_plan.planned_items.0.target_difficulty_level_invalid", validate_question_plan_basic(plan))
+
+    def test_planned_item_target_difficulty_underestimation_is_validated(self) -> None:
+        plan = self._plan()
+        plan["planned_items"] = [
+            {
+                "item_id": "p1",
+                "target_difficulty_level": "basic",
+                "knowledge_point_ids": ["kp-assignment", "kp-comparison"],
+                "combination_requirement": "combine",
+            }
+        ]
+
+        self.assertIn("question_plan.planned_items.0.target_difficulty_underestimated:basic/medium", validate_question_plan_basic(plan))
+
 
 if __name__ == "__main__":
     unittest.main()

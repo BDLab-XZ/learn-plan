@@ -41,7 +41,10 @@
   "project_tasks": [],
   "project_blockers": [],
   "source_material_refs": [],
-  "difficulty_target": {},
+  "difficulty_target": {
+    "allowed_levels": ["basic", "medium", "upper_medium", "hard"],
+    "difficulty_boundaries": "basic=单点直接识别；medium=两个知识点或近迁移；upper_medium=三点以上组合/多步实现；hard=远迁移/状态性/复杂组合"
+  },
   "minimum_pass_shape": {"required_open_question_count": 0},
   "exclusions": [],
   "evidence": [],
@@ -74,7 +77,24 @@
   "question_count": 8,
   "question_mix": {"single_choice": 4, "multiple_choice": 1, "true_false": 1, "code": 1, "sql": 1},
   "difficulty_distribution": {"basic": 1, "medium": 6, "hard": 1},
-  "planned_items": [],
+  "planned_items": [
+    {
+      "item_id": "plan-item-1",
+      "target_difficulty_level": "medium",
+      "knowledge_point_ids": ["kp-assignment", "kp-comparison"],
+      "combination_requirement": "combine",
+      "difficulty_dimensions": {
+        "knowledge_point_count": 2,
+        "requires_concept_combination": true,
+        "reasoning_steps": 2,
+        "boundary_condition_count": 0,
+        "transfer_distance": "near",
+        "implementation_complexity": "none",
+        "trap_density": "medium"
+      },
+      "difficulty_boundary_reason": "两个元知识点需要组合判断，因此最低为 medium。"
+    }
+  ],
   "coverage_matrix": [],
   "minimum_pass_shape": {"required_open_question_count": 0},
   "forbidden_question_types": ["open", "written", "short_answer", "free_text"],
@@ -128,7 +148,7 @@
 
 ## 2. 难度元数据（每题必填）
 
-每道题都必须显式声明难度，runtime 只做结构校验和枚举归一化，不会根据题干自动推断真实难度。
+每道题都必须显式声明难度。runtime 不直接从自然语言题干推断难度，但会基于 `difficulty_dimensions` 确定性推导最低难度，并校验 `difficulty_level` 与 question-plan 目标是否低估；旧题缺少 `difficulty_dimensions` 时保持兼容，但确定性难度覆盖会降低。
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
@@ -137,6 +157,23 @@
 | `difficulty_score` | int | 必须与 level 对应：1 / 2 / 3 / 4 |
 | `difficulty_reason` | string | 标注该难度的理由，必须非空 |
 | `expected_failure_mode` | string 或 array | 预期学习者可能失败的方式，必须非空 |
+| `difficulty_dimensions` | object | 维度化难度自评，包含知识点数、组合要求、推理步数、边界条件、迁移距离、实现复杂度、干扰项密度 |
+| `difficulty_boundary_reason` | string | 说明为什么这些维度落在当前难度边界内 |
+| `claimed_difficulty_level` | string | LLM 自评难度；若省略则等同于 `difficulty_level` |
+| `planned_item_id` | string | 可选；生成题与 `question-plan.planned_items[].item_id` 的显式关联 |
+
+`difficulty_level` 表示题目本体难度，不随学习者变化。同一道题对不同用户应保持同一难度；学习者适配应通过题组分布和入口选择处理，而不是改题目本体难度。
+
+维度化判级边界：
+
+| level | 典型边界 |
+|---|---|
+| `basic` | 单一元知识点；直接识别/复现；无组合要求；0–1 个简单边界 |
+| `medium` | 两个元知识点；需要近迁移、2–3 步推理或多个边界条件 |
+| `upper_medium` | 三个以上元知识点；需要组合应用、多步实现、较强干扰项或隐藏边界 |
+| `hard` | 跨模块/跨抽象层组合；状态性或嵌套数据结构；复杂 SQL/实现策略；远迁移 |
+
+runtime/确定性 reviewer 会用 `difficulty_dimensions` 推导最低难度。LLM 不能只凭感觉填写 `difficulty_level`；如果 `claimed_difficulty_level` 低于启发式最低难度，题目会被阻断并要求重写或修正 plan。
 
 难度映射：
 
@@ -201,6 +238,16 @@
   "difficulty_score": 1,
   "difficulty_reason": "只考察变量引用赋值后共享同一列表对象这一单点概念。",
   "expected_failure_mode": "把 b = a 误解为复制列表。",
+  "difficulty_dimensions": {
+    "knowledge_point_count": 1,
+    "requires_concept_combination": false,
+    "reasoning_steps": 1,
+    "boundary_condition_count": 0,
+    "transfer_distance": "direct",
+    "implementation_complexity": "none",
+    "trap_density": "low"
+  },
+  "difficulty_boundary_reason": "单点引用语义直接识别，无组合推理，因此是 basic。",
   "explanation": "b = a 是引用赋值，a 和 b 指向同一列表对象。b.append(4) 修改了共享对象，所以 a 也变为 [1,2,3,4]。",
   "scoring_rubric": [
     {"metric": "概念理解", "threshold": "正确识别变量引用语义"}

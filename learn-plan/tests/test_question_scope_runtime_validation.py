@@ -169,6 +169,73 @@ class QuestionScopeRuntimeValidationTest(unittest.TestCase):
 
         self.assertIn("question_scope.target_capability_ids_uncovered:python-assignment", result.get("issues", []))
 
+    def test_test_coverage_slice_requires_knowledge_bindings(self) -> None:
+        payload = self._payload()
+        payload["selection_context"]["test_coverage_slice"] = {"selected_points": ["kp-assignment"]}
+
+        result = validate_questions_payload(payload)
+
+        issues = "\n".join(result.get("issues", []))
+        self.assertIn("q1: test 题缺少 knowledge_point_ids", issues)
+        self.assertIn("q1: test 题缺少 evidence_types", issues)
+        self.assertIn("q1: test 题缺少 rubric_by_knowledge_point", issues)
+
+        payload["questions"][0]["knowledge_point_ids"] = ["kp-assignment"]
+        payload["questions"][0]["evidence_types"] = ["explanation"]
+        payload["questions"][0]["rubric_by_knowledge_point"] = {"kp-assignment": ["能区分赋值与比较"]}
+        fixed = validate_questions_payload(payload)
+
+        self.assertTrue(fixed.get("valid"), fixed.get("issues"))
+
+    def test_planned_item_target_difficulty_underestimated_fails(self) -> None:
+        payload = self._payload()
+        plan = payload["plan_source"]["question_plan"]
+        plan["planned_items"] = [
+            {
+                "item_id": "p1",
+                "target_difficulty_level": "basic",
+                "knowledge_point_ids": ["kp-assignment", "kp-comparison"],
+                "combination_requirement": "combine",
+            }
+        ]
+        payload["selection_context"]["question_plan"] = plan
+
+        result = validate_questions_payload(payload)
+
+        self.assertTrue(any("target_difficulty_underestimated:basic/medium" in issue for issue in result.get("issues", [])))
+
+    def test_question_above_planned_target_requests_rewrite(self) -> None:
+        payload = self._payload()
+        plan = payload["plan_source"]["question_plan"]
+        plan["planned_items"] = [{"question_id": "q1", "target_difficulty_level": "basic"}]
+        payload["selection_context"]["question_plan"] = plan
+        payload["questions"][0]["difficulty_level"] = "medium"
+        payload["questions"][0]["difficulty"] = "medium"
+        payload["questions"][0]["difficulty_label"] = "中等题"
+        payload["questions"][0]["difficulty_score"] = 2
+        payload["questions"][0]["difficulty_dimensions"] = {"knowledge_point_count": 2, "reasoning_steps": 2}
+        plan["difficulty_distribution"] = {"medium": 1}
+
+        result = validate_questions_payload(payload)
+
+        self.assertTrue(any("rewrite question" in issue for issue in result.get("issues", [])))
+
+    def test_question_target_uses_planned_item_position_when_ids_differ(self) -> None:
+        payload = self._payload()
+        plan = payload["plan_source"]["question_plan"]
+        plan["planned_items"] = [{"item_id": "plan-item-1", "target_difficulty_level": "basic"}]
+        payload["selection_context"]["question_plan"] = plan
+        payload["questions"][0]["difficulty_level"] = "medium"
+        payload["questions"][0]["difficulty"] = "medium"
+        payload["questions"][0]["difficulty_label"] = "中等题"
+        payload["questions"][0]["difficulty_score"] = 2
+        payload["questions"][0]["difficulty_dimensions"] = {"knowledge_point_count": 2, "reasoning_steps": 2}
+        plan["difficulty_distribution"] = {"medium": 1}
+
+        result = validate_questions_payload(payload)
+
+        self.assertTrue(any("高于计划目标 basic" in issue for issue in result.get("issues", [])))
+
 
 if __name__ == "__main__":
     unittest.main()

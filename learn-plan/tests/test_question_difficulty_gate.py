@@ -9,8 +9,9 @@ SKILL_DIR = Path(__file__).resolve().parents[1]
 if str(SKILL_DIR) not in sys.path:
     sys.path.insert(0, str(SKILL_DIR))
 
+from learn_runtime.question_generation import build_difficulty_review
 from learn_runtime.question_validation import validate_questions_payload
-from learn_runtime.schemas import validate_question_difficulty_fields
+from learn_runtime.schemas import infer_min_difficulty_from_dimensions, validate_question_difficulty_fields
 
 
 def base_question(level: str = "basic") -> dict[str, object]:
@@ -176,6 +177,54 @@ class QuestionDifficultyGateTest(unittest.TestCase):
         result = validate_questions_payload(payload)
 
         self.assertTrue(any("超出 concept 允许范围" in issue for issue in result.get("issues", [])))
+
+    def test_difficulty_dimensions_infer_minimum_level(self) -> None:
+        self.assertEqual(
+            infer_min_difficulty_from_dimensions({"knowledge_point_count": 1, "reasoning_steps": 1}),
+            "basic",
+        )
+        self.assertEqual(
+            infer_min_difficulty_from_dimensions({"knowledge_point_count": 2, "requires_concept_combination": True}),
+            "medium",
+        )
+        self.assertEqual(
+            infer_min_difficulty_from_dimensions({"knowledge_point_count": 3, "requires_concept_combination": True, "reasoning_steps": 3}),
+            "upper_medium",
+        )
+
+    def test_question_dimensions_underestimated_level_blocks(self) -> None:
+        payload = base_payload()
+        payload["questions"] = [base_question("basic")]
+        payload["questions"][0]["difficulty_dimensions"] = {
+            "knowledge_point_count": 2,
+            "requires_concept_combination": True,
+            "reasoning_steps": 2,
+        }
+        payload["plan_source"]["question_plan"]["question_count"] = 1
+        payload["plan_source"]["question_plan"]["question_mix"] = {"single_choice": 1}
+        payload["plan_source"]["question_plan"]["difficulty_distribution"] = {"basic": 1}
+        payload["selection_context"]["question_plan"] = payload["plan_source"]["question_plan"]
+
+        result = validate_questions_payload(payload)
+
+        self.assertTrue(any("低于启发式最低难度 medium" in issue for issue in result.get("issues", [])))
+
+    def test_legacy_question_without_dimensions_still_passes(self) -> None:
+        result = validate_questions_payload(base_payload())
+
+        self.assertEqual(result.get("issues"), [])
+
+    def test_difficulty_review_uses_planned_item_position_when_ids_differ(self) -> None:
+        question = base_question("medium")
+        question["difficulty_dimensions"] = {"knowledge_point_count": 2, "reasoning_steps": 2}
+        review = build_difficulty_review(
+            [question],
+            {"planned_items": [{"item_id": "plan-item-1", "target_difficulty_level": "basic"}]},
+        )
+
+        self.assertFalse(review.get("valid"))
+        self.assertTrue(any("高于计划目标 basic" in issue for issue in review.get("issues", [])))
+        self.assertEqual(review.get("items", [])[0].get("target_difficulty_level"), "basic")
 
 
 if __name__ == "__main__":

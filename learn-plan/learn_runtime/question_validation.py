@@ -14,9 +14,13 @@ from learn_runtime.schemas import (
     DIFFICULTY_LEVEL_ORDER,
     DIFFICULTY_LEVELS,
     TABULAR_PARAMETER_TYPES,
+    compare_difficulty_levels,
+    difficulty_dimensions_present,
+    infer_min_difficulty_from_dimensions,
     normalize_difficulty_level,
     preflight_code_question_tests,
     REQUIRED_QUESTIONS_TOP_LEVEL,
+    validate_difficulty_dimensions,
     validate_question_difficulty_fields,
     validate_question_plan_basic,
     validate_question_runtime_contract,
@@ -173,6 +177,23 @@ def question_traceability_locator(item: dict[str, Any]) -> str | None:
     return None
 
 
+def question_knowledge_point_ids(item: dict[str, Any]) -> list[str]:
+    source_trace = item.get("source_trace") if isinstance(item.get("source_trace"), dict) else {}
+    rubric = item.get("rubric_by_knowledge_point") if isinstance(item.get("rubric_by_knowledge_point"), dict) else {}
+    return normalize_string_list(
+        item.get("knowledge_point_ids")
+        or item.get("knowledge_points")
+        or source_trace.get("knowledge_point_ids")
+        or source_trace.get("knowledge_points")
+        or list(rubric.keys())
+    )
+
+
+def question_evidence_types(item: dict[str, Any]) -> list[str]:
+    source_trace = item.get("source_trace") if isinstance(item.get("source_trace"), dict) else {}
+    return normalize_string_list(item.get("evidence_types") or source_trace.get("evidence_types"))
+
+
 def _normalize_difficulty_level_list(value: Any) -> list[str]:
     levels: list[str] = []
     raw_values = value if isinstance(value, list) else [value]
@@ -218,7 +239,65 @@ def _allowed_levels_for_category(target: dict[str, Any], category: str) -> list[
     return _normalize_difficulty_level_list(target.get("allowed_levels"))
 
 
-def validate_question_item(item: Any) -> list[str]:
+def _planned_item_target_level(planned: dict[str, Any]) -> str | None:
+    return normalize_difficulty_level(planned.get("target_difficulty_level") or planned.get("difficulty_level") or planned.get("difficulty"))
+
+
+def _question_planned_item_id(item: dict[str, Any]) -> str:
+    source_trace = item.get("source_trace") if isinstance(item.get("source_trace"), dict) else {}
+    return str(
+        item.get("planned_item_id")
+        or item.get("plan_item_id")
+        or source_trace.get("planned_item_id")
+        or source_trace.get("plan_item_id")
+        or ""
+    ).strip()
+
+
+def _difficulty_target_for_item(
+    question_plan: dict[str, Any],
+    item: dict[str, Any],
+    *,
+    item_index: int | None = None,
+    question_count: int | None = None,
+) -> str | None:
+    planned_items = question_plan.get("planned_items") if isinstance(question_plan.get("planned_items"), list) else []
+    qid = str(item.get("id") or "").strip()
+    question_plan_item_id = _question_planned_item_id(item)
+    for planned in planned_items:
+        if not isinstance(planned, dict):
+            continue
+        planned_item_id = str(planned.get("planned_item_id") or planned.get("item_id") or planned.get("id") or "").strip()
+        if question_plan_item_id and planned_item_id == question_plan_item_id:
+            return _planned_item_target_level(planned)
+        planned_question_id = str(planned.get("question_id") or planned.get("generated_question_id") or "").strip()
+        if planned_question_id and qid and planned_question_id == qid:
+            return _planned_item_target_level(planned)
+    if question_count is not None and item_index is not None and len(planned_items) == question_count and 0 <= item_index < len(planned_items):
+        planned = planned_items[item_index]
+        if isinstance(planned, dict):
+            return _planned_item_target_level(planned)
+    return None
+
+
+def _validate_question_difficulty_dimensions(item: dict[str, Any], *, target_level: str | None = None) -> list[str]:
+    if not difficulty_dimensions_present(item.get("difficulty_dimensions")):
+        return []
+    qid = str(item.get("id") or "<missing-id>")
+    issues = [f"{qid}: {issue}" for issue in validate_difficulty_dimensions(item.get("difficulty_dimensions"), context="question.difficulty_dimensions")]
+    if issues:
+        return issues
+    computed = infer_min_difficulty_from_dimensions(item.get("difficulty_dimensions"))
+    claimed = normalize_difficulty_level(item.get("difficulty_level") or item.get("difficulty"))
+    if claimed and compare_difficulty_levels(claimed, computed) < 0:
+        issues.append(f"{qid}: difficulty_level={claimed} 低于启发式最低难度 {computed}，请降低题目复杂度或修正 question-plan 目标")
+    if target_level and claimed and compare_difficulty_levels(claimed, target_level) > 0:
+        issues.append(f"{qid}: difficulty_level={claimed} 高于计划目标 {target_level}，请 rewrite question 降低复杂度以匹配目标难度")
+    return issues
+
+
+
+def validate_question_item(item: Any, *, target_level: str | None = None) -> list[str]:
     issues: list[str] = []
     if not isinstance(item, dict):
         return ["题目不是 object"]
@@ -226,6 +305,7 @@ def validate_question_item(item: Any) -> list[str]:
     difficulty_issues = validate_question_difficulty_fields(item)
     if difficulty_issues:
         issues.extend(f"{qid}: {issue}" for issue in difficulty_issues)
+    issues.extend(_validate_question_difficulty_dimensions(item, target_level=target_level))
     test_grade_issues = validate_test_grade_question(item)
     if test_grade_issues:
         issues.extend(f"{qid}: {issue}" for issue in test_grade_issues)
@@ -497,6 +577,9 @@ def validate_questions_payload(data: dict[str, Any]) -> dict[str, Any]:
     required_capability_coverage = normalize_string_list(minimum_pass_shape.get("required_capability_coverage") or [])
     required_open_question_count = max(0, int(minimum_pass_shape.get("required_open_question_count") or 0))
     required_code_question_count = max(0, int(minimum_pass_shape.get("required_code_question_count") or 0))
+    test_coverage_slice = selection_context.get("test_coverage_slice") if isinstance(selection_context.get("test_coverage_slice"), dict) else {}
+    selected_knowledge_points = set(normalize_string_list(test_coverage_slice.get("selected_points") or []))
+    test_requires_knowledge_binding = semantic_profile in {"initial-test", "stage-test"} and bool(selected_knowledge_points)
 
     ids: set[str] = set()
     source_markers: list[str] = []
@@ -508,8 +591,9 @@ def validate_questions_payload(data: dict[str, Any]) -> dict[str, Any]:
     capability_counts: dict[str, int] = {}
     traceability: list[dict[str, Any]] = []
     difficulty_target = _difficulty_target_from_payload(plan_source, selection_context)
+    question_plan_for_difficulty = _question_plan_from_payload(plan_source, selection_context)
 
-    for item in questions:
+    for item_index, item in enumerate(questions):
         if isinstance(item, dict):
             qid = str(item.get("id") or "")
             category = str(item.get("category") or "unknown")
@@ -529,6 +613,20 @@ def validate_questions_payload(data: dict[str, Any]) -> dict[str, Any]:
                 primary_category_counts[primary_category] = primary_category_counts.get(primary_category, 0) + 1
             for capability_id in _question_capabilities(item):
                 capability_counts[capability_id] = capability_counts.get(capability_id, 0) + 1
+            if test_requires_knowledge_binding:
+                point_ids = question_knowledge_point_ids(item)
+                evidence_types = question_evidence_types(item)
+                rubric = item.get("rubric_by_knowledge_point") if isinstance(item.get("rubric_by_knowledge_point"), dict) else {}
+                if not point_ids:
+                    issues.append(f"{qid or '<missing-id>'}: test 题缺少 knowledge_point_ids")
+                elif not any(point_id in selected_knowledge_points for point_id in point_ids):
+                    issues.append(f"{qid or '<missing-id>'}: knowledge_point_ids 未命中 test_coverage_slice.selected_points")
+                if not evidence_types:
+                    issues.append(f"{qid or '<missing-id>'}: test 题缺少 evidence_types")
+                if not rubric:
+                    issues.append(f"{qid or '<missing-id>'}: test 题缺少 rubric_by_knowledge_point")
+                if not source_trace:
+                    issues.append(f"{qid or '<missing-id>'}: test 题缺少 source_trace")
             if not qid:
                 issues.append("存在题目缺少 id")
             elif qid in ids:
@@ -552,7 +650,13 @@ def validate_questions_payload(data: dict[str, Any]) -> dict[str, Any]:
             )
         if isinstance(item, dict) and language_policy.get("localization_required") and language_policy.get("user_facing_language"):
             warnings.extend(_collect_question_language_warnings(item, str(language_policy.get("user_facing_language") or "")))
-        issues.extend(validate_question_item(item))
+        target_level = _difficulty_target_for_item(
+            question_plan_for_difficulty,
+            item,
+            item_index=item_index,
+            question_count=len(questions),
+        ) if isinstance(item, dict) else None
+        issues.extend(validate_question_item(item, target_level=target_level))
         if isinstance(item, dict) and str(item.get("type") or "").strip() in {"code", "function"}:
             issues.extend(f"{str(item.get('id') or '<missing-id>')}: {issue}" for issue in preflight_code_question_tests(item))
 
@@ -769,7 +873,9 @@ __all__ = [
     "FALLBACK_SOURCE_STATUSES",
     "REQUIRED_TOP_LEVEL",
     "ensure_questions_payload_quality",
+    "question_evidence_types",
     "question_has_answer_and_explanation",
+    "question_knowledge_point_ids",
     "question_source_marker",
     "question_traceability_locator",
     "question_traceability_status",

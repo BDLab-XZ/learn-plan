@@ -21,7 +21,15 @@ from learn_runtime.question_banks import (
     resolve_target_clusters,
     resolve_target_stages,
 )
-from learn_runtime.schemas import TEST_GRADE_OBJECTIVE_TYPES, normalize_question_difficulty_fields
+from learn_runtime.schemas import (
+    TEST_GRADE_OBJECTIVE_TYPES,
+    compare_difficulty_levels,
+    difficulty_dimensions_present,
+    infer_min_difficulty_from_dimensions,
+    normalize_difficulty_level,
+    normalize_question_difficulty_fields,
+    validate_difficulty_dimensions,
+)
 from learn_runtime.source_grounding import (
     build_content_aware_pitfall,
     clean_source_teaching_terms,
@@ -43,7 +51,7 @@ def is_valid_runtime_question(item: Any) -> bool:
         if not str(item.get("question") or item.get("prompt") or "").strip():
             return False
         options = item.get("options")
-        if not isinstance(options, list) or len(options) < 2:
+        if qtype in {"single_choice", "multiple_choice"} and (not isinstance(options, list) or len(options) < 2):
             return False
         if qtype == "single_choice":
             answer = item.get("answer")
@@ -51,6 +59,8 @@ def is_valid_runtime_question(item: Any) -> bool:
         if qtype == "multiple_choice":
             answer = item.get("answers", item.get("answer"))
             return isinstance(answer, list) and bool(answer) and all(isinstance(index, int) and not isinstance(index, bool) and 0 <= index < len(options) for index in answer)
+        if not isinstance(options, list) or len(options) not in {0, 2}:
+            return False
         answer = item.get("answer")
         return isinstance(answer, bool) or str(answer).lower() in {"true", "false", "0", "1"}
     if category == "code":
@@ -523,7 +533,22 @@ def normalize_generated_runtime_questions(
             if grading_hint:
                 item["grading_hint"] = grading_hint
         item.update(normalize_question_difficulty_fields({**raw, **item}))
-        for key in ("difficulty_reason", "expected_failure_mode"):
+        if raw.get("claimed_difficulty_level") is not None:
+            item["claimed_difficulty_level"] = normalize_difficulty_level(raw.get("claimed_difficulty_level")) or raw.get("claimed_difficulty_level")
+        else:
+            item["claimed_difficulty_level"] = item.get("difficulty_level") or item.get("difficulty")
+        for key in (
+            "difficulty_reason",
+            "expected_failure_mode",
+            "difficulty_dimensions",
+            "difficulty_boundary_reason",
+            "planned_item_id",
+            "plan_item_id",
+            "knowledge_point_ids",
+            "knowledge_points",
+            "evidence_types",
+            "rubric_by_knowledge_point",
+        ):
             if raw.get(key) is not None:
                 item[key] = raw.get(key)
         target_capability_ids = normalize_string_list(raw.get("target_capability_ids") or source_trace.get("target_capability_ids") or [])
@@ -786,6 +811,95 @@ def extract_question_review_targets(grounding_context: dict[str, Any], daily_les
         "review_targets": normalize_question_review_target_list(review_candidates, limit=8),
     }
 
+
+
+def _review_planned_item_target_level(planned: dict[str, Any]) -> str | None:
+    return normalize_difficulty_level(planned.get("target_difficulty_level") or planned.get("difficulty_level") or planned.get("difficulty"))
+
+
+def _review_question_planned_item_id(question: dict[str, Any]) -> str:
+    source_trace = question.get("source_trace") if isinstance(question.get("source_trace"), dict) else {}
+    return str(
+        question.get("planned_item_id")
+        or question.get("plan_item_id")
+        or source_trace.get("planned_item_id")
+        or source_trace.get("plan_item_id")
+        or ""
+    ).strip()
+
+
+def _review_difficulty_target_for_question(
+    planned_items: list[Any],
+    question: dict[str, Any],
+    *,
+    question_index: int,
+    question_count: int,
+) -> str | None:
+    qid = str(question.get("id") or "").strip()
+    question_plan_item_id = _review_question_planned_item_id(question)
+    for planned in planned_items:
+        if not isinstance(planned, dict):
+            continue
+        planned_item_id = str(planned.get("planned_item_id") or planned.get("item_id") or planned.get("id") or "").strip()
+        if question_plan_item_id and planned_item_id == question_plan_item_id:
+            return _review_planned_item_target_level(planned)
+        planned_question_id = str(planned.get("question_id") or planned.get("generated_question_id") or "").strip()
+        if planned_question_id and qid and planned_question_id == qid:
+            return _review_planned_item_target_level(planned)
+    if len(planned_items) == question_count and 0 <= question_index < len(planned_items):
+        planned = planned_items[question_index]
+        if isinstance(planned, dict):
+            return _review_planned_item_target_level(planned)
+    return None
+
+
+def build_difficulty_review(questions: list[dict[str, Any]], question_plan: dict[str, Any] | None = None) -> dict[str, Any]:
+    plan = question_plan if isinstance(question_plan, dict) else {}
+    planned_items = plan.get("planned_items") if isinstance(plan.get("planned_items"), list) else []
+
+    issues: list[str] = []
+    warnings: list[str] = []
+    items: list[dict[str, Any]] = []
+    for question_index, question in enumerate(questions):
+        qid = str(question.get("id") or "<missing-id>")
+        claimed = normalize_difficulty_level(question.get("claimed_difficulty_level") or question.get("difficulty_level") or question.get("difficulty"))
+        target = _review_difficulty_target_for_question(
+            planned_items,
+            question,
+            question_index=question_index,
+            question_count=len(questions),
+        )
+        if not difficulty_dimensions_present(question.get("difficulty_dimensions")):
+            warnings.append(f"{qid}: difficulty_dimensions_missing，无法执行启发式难度审查")
+            continue
+        dimension_issues = validate_difficulty_dimensions(question.get("difficulty_dimensions"), context=f"questions.{qid}.difficulty_dimensions")
+        if dimension_issues:
+            issues.extend(dimension_issues)
+            continue
+        computed = infer_min_difficulty_from_dimensions(question.get("difficulty_dimensions"))
+        item_review = {
+            "question_id": qid,
+            "claimed_difficulty_level": claimed,
+            "computed_min_difficulty_level": computed,
+            "target_difficulty_level": target,
+            "repair_action": None,
+        }
+        if claimed and compare_difficulty_levels(claimed, computed) < 0:
+            item_review["repair_action"] = "rewrite_question_lower_complexity_or_fix_plan_target"
+            issues.append(f"{qid}: claimed difficulty {claimed} 低于启发式最低难度 {computed}")
+        if target and claimed and compare_difficulty_levels(claimed, target) > 0:
+            item_review["repair_action"] = "rewrite_question_lower_complexity"
+            issues.append(f"{qid}: claimed difficulty {claimed} 高于计划目标 {target}，应重写题目降低复杂度")
+        if target and computed and compare_difficulty_levels(computed, target) > 0:
+            item_review["repair_action"] = "rewrite_question_lower_complexity"
+            issues.append(f"{qid}: computed difficulty {computed} 高于计划目标 {target}，应重写题目降低复杂度")
+        items.append(item_review)
+    return {
+        "valid": not issues,
+        "issues": issues,
+        "warnings": warnings,
+        "items": items,
+    }
 
 
 def question_capability_ids(item: dict[str, Any]) -> list[str]:
@@ -1118,6 +1232,13 @@ def build_question_review(questions: list[dict[str, Any]], domain: str, groundin
         daily_lesson_plan,
         seed_constraints=context.get("seed_constraints") if isinstance(context, dict) else None,
     )
+    question_plan = grounding_context.get("question_plan") if isinstance(grounding_context.get("question_plan"), dict) else daily_lesson_plan.get("question_plan") if isinstance(daily_lesson_plan.get("question_plan"), dict) else {}
+    difficulty_review = build_difficulty_review(questions, question_plan)
+    if not difficulty_review.get("valid", True):
+        issues.extend(normalize_string_list(difficulty_review.get("issues") or []))
+        suggestions.append("按 difficulty_dimensions 重写题目或修正 question-plan 目标难度，不要只改 difficulty_level 元数据。")
+    if difficulty_review.get("warnings"):
+        warnings.extend(normalize_string_list(difficulty_review.get("warnings") or []))
     minimum_pass_shape = semantic_trace.get("minimum_pass_shape") if isinstance(semantic_trace.get("minimum_pass_shape"), dict) else {}
     required_primary_categories = normalize_string_list(minimum_pass_shape.get("required_primary_categories") or [])
     required_capability_coverage = normalize_string_list(minimum_pass_shape.get("required_capability_coverage") or [])
@@ -1167,6 +1288,7 @@ def build_question_review(questions: list[dict[str, Any]], domain: str, groundin
             "verdict": "needs-revision",
             "repair_plan": repair_plan,
             "semantic_trace": semantic_trace,
+            "difficulty_review": {"valid": True, "issues": [], "warnings": [], "items": []},
         }
 
     focus_hits = context["focus_hits"]
@@ -1329,6 +1451,7 @@ def build_question_review(questions: list[dict[str, Any]], domain: str, groundin
         "coverage": coverage,
         "repair_plan": repair_plan,
         "semantic_trace": semantic_trace,
+        "difficulty_review": difficulty_review,
     }
 
 
@@ -1771,6 +1894,7 @@ def build_question_reviewer_prompt(
         "warnings": normalize_string_list(deterministic_review.get("warnings") or [])[:5],
         "coverage": deterministic_review.get("coverage") if isinstance(deterministic_review.get("coverage"), dict) else {},
         "repair_plan": normalize_question_repair_plan(deterministic_review.get("repair_plan")),
+        "difficulty_review": deterministic_review.get("difficulty_review") if isinstance(deterministic_review.get("difficulty_review"), dict) else {},
     }
     compact_questions: list[dict[str, Any]] = []
     for item in questions:
@@ -1816,6 +1940,10 @@ def build_question_reviewer_prompt(
                     "target_capability_ids": normalize_string_list(source_trace.get("target_capability_ids") or [])[:6],
                 },
                 "capability_ids": question_capability_ids(item),
+                "difficulty_level": item.get("difficulty_level") or item.get("difficulty"),
+                "claimed_difficulty_level": item.get("claimed_difficulty_level") or item.get("difficulty_level") or item.get("difficulty"),
+                "difficulty_dimensions": item.get("difficulty_dimensions") if isinstance(item.get("difficulty_dimensions"), dict) else {},
+                "difficulty_boundary_reason": item.get("difficulty_boundary_reason"),
                 "test_case_count": len(item.get("test_cases") or []) if isinstance(item.get("test_cases"), list) else 0,
                 "reference_points": normalize_string_list(item.get("reference_points") or [])[:8],
             }
@@ -1835,6 +1963,7 @@ def build_question_reviewer_prompt(
 {TEST_GRADE_QUESTION_PROMPT_BLOCK}
 {review_focus.get(semantic_profile, review_focus['today'])}
 6. 所有 session 都必须额外检查 question_scope 与 question_plan：题目数量、题型 mix、难度分布、能力覆盖、来源依据和 forbidden_question_types 是否与计划一致；若不一致，必须判 needs-revision。
+7. 必须逐题审查难度维度：difficulty_level 不能只凭感觉，必须和 difficulty_dimensions 中的 knowledge_point_count、requires_concept_combination、reasoning_steps、boundary_condition_count、transfer_distance、implementation_complexity、trap_density 一致。若 claimed/computed/target 不一致，优先建议重写题目以匹配目标难度；只有 planned item 本身不可行时才建议修 question-plan。
 
 输出 JSON object，字段必须包含：
 - valid: boolean
