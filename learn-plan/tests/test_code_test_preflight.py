@@ -19,9 +19,10 @@ class CodeTestPreflightTest(unittest.TestCase):
             "type": "code",
             "category": "code",
             "title": "多参数求和",
-            "problem_statement": "实现 combine(a, b, c)，返回三个整数之和。",
-            "input_spec": "a, b, c: int。",
-            "output_spec": "返回 int。",
+            "problem_statement": "实现 `combine(a, b, c)`。\n\n**目标**：返回三个整数之和。\n\n要求：\n- 使用三个独立参数\n- 不修改输入值",
+            "input_spec": "`a: int`、`b: int`、`c: int`，三个参数均为整数。",
+            "output_spec": "返回 `int`，表示三个整数之和。",
+            "calculation_spec": "计算规则为 `a + b + c`，不做类型转换或舍入。",
             "constraints": ["参数均为整数"],
             "examples": [{"input": {"a": 1, "b": 2, "c": 3}, "output": 6, "explanation": "1 + 2 + 3 = 6。"}],
             "public_tests": [{"kwargs": {"a": 1, "b": 2, "c": 3}, "expected": expected, "category": "public"}],
@@ -55,6 +56,23 @@ class CodeTestPreflightTest(unittest.TestCase):
             },
             "selection_context": {"language_policy": {"user_facing_language": "zh-CN"}},
             "materials": [],
+            "runtime_context": {
+                "parameter_spec": {
+                    "schema_version": "learn-plan.parameter_spec.v1",
+                    "questions": [
+                        {
+                            "question_id": "code-combine",
+                            "supported_runtimes": ["python"],
+                            "default_runtime": "python",
+                            "parameters": [
+                                {"name": "a", "type": "json", "schema": {"kind": "int"}},
+                                {"name": "b", "type": "json", "schema": {"kind": "int"}},
+                                {"name": "c", "type": "json", "schema": {"kind": "int"}},
+                            ],
+                        }
+                    ],
+                }
+            },
             "questions": [question],
         }
 

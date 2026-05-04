@@ -322,6 +322,7 @@ function mapQuestion(question: RuntimeQuestion, index: number): DemoQuestion {
     outputCode: stringifyValue(example.output),
     explanation: example.explanation,
   }))
+  const constraints = normalizeConstraints(question.constraints)
   syncQuestionDifficultySnapshot(question)
   return {
     id: question.id,
@@ -336,7 +337,8 @@ function mapQuestion(question: RuntimeQuestion, index: number): DemoQuestion {
     description: question.problem_statement || question.question || question.prompt || '',
     inputSpec: question.input_spec || question.function_signature,
     outputSpec: question.output_spec,
-    constraints: normalizeConstraints(question.constraints),
+    calculationSpec: question.calculation_spec || constraints.join('\n'),
+    constraints,
     examples,
     exampleDisplays: question.example_displays || [],
     publicTests: (question.public_tests || []).map(mapPublicTest),

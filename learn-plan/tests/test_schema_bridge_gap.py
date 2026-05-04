@@ -316,6 +316,31 @@ def make_valid_question_artifact() -> dict:
             "daily_lesson_plan": {},
         },
         "materials": [],
+        "runtime_context": {
+            "parameter_spec": {
+                "schema_version": "learn-plan.parameter_spec.v1",
+                "questions": [
+                    {
+                        "question_id": "q-code-01",
+                        "supported_runtimes": ["python"],
+                        "default_runtime": "python",
+                        "parameters": [
+                            {
+                                "name": "scores",
+                                "type": "json",
+                                "schema": {
+                                    "kind": "list",
+                                    "element": {
+                                        "kind": "union",
+                                        "any_of": [{"kind": "int"}, {"kind": "none"}],
+                                    },
+                                },
+                            }
+                        ],
+                    }
+                ],
+            }
+        },
         "questions": [
             {
                 "id": "q-concept-01",
@@ -347,6 +372,7 @@ def make_valid_question_artifact() -> dict:
                 "problem_statement": "实现 `filter_scores` 函数：\n\n接收一个可能含 `None` 和负数的整数列表，返回**只含非负整数**的新列表，保持原顺序。\n\n调用后不得修改原始列表。",
                 "input_spec": "scores: list[int | None] — 可能含 None 和负数的整数列表",
                 "output_spec": "list[int] — 只含非负整数的新列表，保持原顺序",
+                "calculation_spec": "逐个扫描 `scores`：跳过 `None` 和小于 0 的整数，保留 0 与正整数，并按原顺序组成新列表；不做类型转换，也不原地修改 `scores`。",
                 "constraints": ["不修改原列表", "保持元素顺序", "None 和负数被过滤", "0 和正数保留"],
                 "function_signature": "def filter_scores(scores: list) -> list:",
                 "function_name": "filter_scores",
@@ -358,6 +384,9 @@ def make_valid_question_artifact() -> dict:
                         "output": [100, 0, 88],
                         "explanation": "None 和 -1 被过滤，其他保留。",
                     }
+                ],
+                "public_tests": [
+                    {"args": [[100, None, -1, 0, 88]], "expected": [100, 0, 88]},
                 ],
                 "hidden_tests": [
                     {"args": [[100, None, -1, 0, 88]], "expected": [100, 0, 88]},

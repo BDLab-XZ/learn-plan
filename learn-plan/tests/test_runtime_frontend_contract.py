@@ -27,11 +27,23 @@ class RuntimeFrontendContractTest(unittest.TestCase):
         store_source = (SRC_DIR / "store" / "runtimeStore.ts").read_text(encoding="utf-8")
         tabs_source = (SRC_DIR / "components" / "ProblemInfoTabs.vue").read_text(encoding="utf-8")
 
-        for field in ("problem_statement", "input_spec", "output_spec", "constraints", "examples", "public_tests"):
+        for field in ("problem_statement", "input_spec", "output_spec", "calculation_spec", "constraints", "examples", "public_tests"):
             self.assertIn(field, store_source)
+        self.assertIn("calculationSpec", store_source)
+        self.assertIn("计算说明", tabs_source)
         self.assertNotIn("hidden_tests", tabs_source)
         self.assertNotIn("公开测试", tabs_source)
+        self.assertNotIn("io-spec-grid", tabs_source)
         self.assertIn("ExampleDisplaySection", tabs_source)
+
+    def test_example_parameter_display_uses_tag_single_column_layout(self) -> None:
+        example_source = (SRC_DIR / "components" / "ExampleDisplaySection.vue").read_text(encoding="utf-8")
+        style_source = (SRC_DIR / "style.css").read_text(encoding="utf-8")
+
+        self.assertIn("example-parameter-row", example_source)
+        self.assertIn("border-radius: 999px", style_source)
+        self.assertIn("grid-template-columns: minmax(0, 1fr)", style_source)
+        self.assertNotIn("grid-template-columns: minmax(92px, 0.35fr) minmax(0, 1fr)", style_source)
 
     def test_problem_layout_has_scroll_resize_and_long_text_guards(self) -> None:
         style_source = (SRC_DIR / "style.css").read_text(encoding="utf-8")

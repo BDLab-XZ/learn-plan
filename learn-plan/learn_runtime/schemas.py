@@ -76,8 +76,10 @@ REQUIRED_CODE_QUESTION_FIELDS = [
     "problem_statement",
     "input_spec",
     "output_spec",
+    "calculation_spec",
     "constraints",
     "examples",
+    "public_tests",
     "hidden_tests",
     "scoring_rubric",
     "capability_tags",
@@ -953,6 +955,296 @@ def _case_visibility(case: dict[str, Any]) -> str:
     return str(case.get("visibility") or case.get("category") or "").strip().lower()
 
 
+PARAMETER_SCHEMA_KINDS = {"int", "float", "number", "bool", "str", "string", "none", "null", "json", "list", "array", "tuple", "dict", "object", "union"}
+SCALAR_PARAMETER_SCHEMA_KINDS = {"int", "float", "number", "bool", "str", "string", "none", "null", "json"}
+
+
+def validate_parameter_schema_node(value: Any, *, context: str = "parameter_schema") -> list[str]:
+    if not isinstance(value, dict):
+        return [f"{context}.not_object"]
+    issues: list[str] = []
+    kind = str(value.get("kind") or value.get("type") or "").strip().lower().replace("-", "_")
+    if kind not in PARAMETER_SCHEMA_KINDS:
+        issues.append(f"{context}.kind_invalid")
+        return issues
+    if kind in {"list", "array"}:
+        element = value.get("element") or value.get("items")
+        if not isinstance(element, dict):
+            issues.append(f"{context}.element_missing")
+        else:
+            issues.extend(validate_parameter_schema_node(element, context=f"{context}.element"))
+    elif kind == "tuple":
+        items = value.get("items")
+        if not isinstance(items, list) or not items:
+            issues.append(f"{context}.items_missing")
+        else:
+            for index, item in enumerate(items):
+                issues.extend(validate_parameter_schema_node(item, context=f"{context}.items.{index}"))
+    elif kind in {"dict", "object"}:
+        fields = value.get("fields")
+        key_schema = value.get("key") or value.get("keys")
+        value_schema = value.get("value") or value.get("values")
+        if fields is not None:
+            if not isinstance(fields, dict) or not fields:
+                issues.append(f"{context}.fields_invalid")
+            else:
+                for field_name, field_schema in fields.items():
+                    if not str(field_name or "").strip():
+                        issues.append(f"{context}.fields.name_missing")
+                        continue
+                    issues.extend(validate_parameter_schema_node(field_schema, context=f"{context}.fields.{field_name}"))
+        elif key_schema is not None or value_schema is not None:
+            if key_schema is not None:
+                issues.extend(validate_parameter_schema_node(key_schema, context=f"{context}.key"))
+            if value_schema is None:
+                issues.append(f"{context}.value_missing")
+            else:
+                issues.extend(validate_parameter_schema_node(value_schema, context=f"{context}.value"))
+        elif kind == "dict":
+            issues.append(f"{context}.value_missing")
+    elif kind == "union":
+        any_of = value.get("any_of") or value.get("one_of") or value.get("types")
+        if not isinstance(any_of, list) or len(any_of) < 2:
+            issues.append(f"{context}.any_of_invalid")
+        else:
+            for index, option in enumerate(any_of):
+                if isinstance(option, str):
+                    option = {"kind": option}
+                issues.extend(validate_parameter_schema_node(option, context=f"{context}.any_of.{index}"))
+    for numeric_field in ("min", "max", "min_length", "max_length"):
+        if numeric_field in value:
+            try:
+                float(value.get(numeric_field))
+            except (TypeError, ValueError):
+                issues.append(f"{context}.{numeric_field}_invalid")
+    if "allowed_values" in value and not isinstance(value.get("allowed_values"), list):
+        issues.append(f"{context}.allowed_values_invalid")
+    return issues
+
+
+def _parameter_schema_kind(value: dict[str, Any]) -> str:
+    return str(value.get("kind") or value.get("type") or "").strip().lower().replace("-", "_")
+
+
+def _schema_options(value: dict[str, Any]) -> list[Any]:
+    options = value.get("any_of") or value.get("one_of") or value.get("types")
+    return options if isinstance(options, list) else []
+
+
+def _value_violates_scalar_schema(value: Any, kind: str) -> bool:
+    if kind in {"none", "null"}:
+        return value is not None
+    if kind == "bool":
+        return not isinstance(value, bool)
+    if kind == "int":
+        return not (isinstance(value, int) and not isinstance(value, bool))
+    if kind in {"float", "number"}:
+        return not (isinstance(value, (int, float)) and not isinstance(value, bool))
+    if kind in {"str", "string"}:
+        return not isinstance(value, str)
+    return False
+
+
+def _value_schema_mismatch_paths(value: Any, schema: Any, *, path: str = "$") -> list[str]:
+    if not isinstance(schema, dict):
+        return [path]
+    kind = _parameter_schema_kind(schema)
+    if schema.get("nullable") is True and value is None:
+        return []
+    if "allowed_values" in schema and isinstance(schema.get("allowed_values"), list) and value not in schema.get("allowed_values", []):
+        return [path]
+    if kind in SCALAR_PARAMETER_SCHEMA_KINDS:
+        mismatches = [] if kind == "json" or not _value_violates_scalar_schema(value, kind) else [path]
+    elif kind in {"list", "array"}:
+        if not isinstance(value, list):
+            return [path]
+        element = schema.get("element") or schema.get("items")
+        mismatches = []
+        if isinstance(element, dict):
+            for index, item in enumerate(value):
+                mismatches.extend(_value_schema_mismatch_paths(item, element, path=f"{path}[{index}]"))
+    elif kind == "tuple":
+        items = schema.get("items") if isinstance(schema.get("items"), list) else []
+        if not isinstance(value, (list, tuple)) or len(value) != len(items):
+            return [path]
+        mismatches = []
+        for index, item_schema in enumerate(items):
+            mismatches.extend(_value_schema_mismatch_paths(value[index], item_schema, path=f"{path}[{index}]"))
+    elif kind in {"dict", "object"}:
+        if not isinstance(value, dict):
+            return [path]
+        fields = schema.get("fields")
+        mismatches = []
+        if isinstance(fields, dict) and fields:
+            for field_name, field_schema in fields.items():
+                field_key = str(field_name)
+                optional = isinstance(field_schema, dict) and bool(field_schema.get("optional"))
+                if field_key not in value:
+                    if not optional:
+                        mismatches.append(f"{path}.{field_key}")
+                    continue
+                mismatches.extend(_value_schema_mismatch_paths(value[field_key], field_schema, path=f"{path}.{field_key}"))
+        else:
+            key_schema = schema.get("key") or schema.get("keys")
+            value_schema = schema.get("value") or schema.get("values")
+            if isinstance(key_schema, dict):
+                for key in value:
+                    mismatches.extend(_value_schema_mismatch_paths(key, key_schema, path=f"{path}.<key>"))
+            if isinstance(value_schema, dict):
+                for key, item in value.items():
+                    mismatches.extend(_value_schema_mismatch_paths(item, value_schema, path=f"{path}.{key}"))
+    elif kind == "union":
+        for option in _schema_options(schema):
+            option_schema = {"kind": option} if isinstance(option, str) else option
+            if not _value_schema_mismatch_paths(value, option_schema, path=path):
+                return []
+        return [path]
+    else:
+        return [path]
+    for numeric_field, comparator in (("min", lambda left, right: left < right), ("max", lambda left, right: left > right)):
+        if numeric_field in schema and isinstance(value, (int, float)) and not isinstance(value, bool):
+            try:
+                if comparator(float(value), float(schema.get(numeric_field))):
+                    mismatches.append(path)
+            except (TypeError, ValueError):
+                pass
+    if "min_length" in schema and hasattr(value, "__len__"):
+        try:
+            if len(value) < int(schema.get("min_length")):
+                mismatches.append(path)
+        except (TypeError, ValueError):
+            pass
+    if "max_length" in schema and hasattr(value, "__len__"):
+        try:
+            if len(value) > int(schema.get("max_length")):
+                mismatches.append(path)
+        except (TypeError, ValueError):
+            pass
+    return list(dict.fromkeys(mismatches))
+
+
+def _parameter_schema_tokens(schema: Any) -> set[str]:
+    if not isinstance(schema, dict):
+        return set()
+    kind = _parameter_schema_kind(schema)
+    tokens: set[str] = set()
+    if kind:
+        tokens.add(kind)
+    if kind in {"list", "array"}:
+        tokens.add("list")
+        tokens.update(_parameter_schema_tokens(schema.get("element") or schema.get("items")))
+    elif kind == "tuple":
+        tokens.add("tuple")
+        for item in schema.get("items") or []:
+            tokens.update(_parameter_schema_tokens(item))
+    elif kind in {"dict", "object"}:
+        tokens.add("dict")
+        fields = schema.get("fields")
+        if isinstance(fields, dict):
+            for field_name, field_schema in fields.items():
+                tokens.add(str(field_name).strip().lower())
+                tokens.update(_parameter_schema_tokens(field_schema))
+        else:
+            tokens.update(_parameter_schema_tokens(schema.get("key") or schema.get("keys")))
+            tokens.update(_parameter_schema_tokens(schema.get("value") or schema.get("values")))
+    elif kind == "union":
+        tokens.add("union")
+        for option in _schema_options(schema):
+            tokens.update(_parameter_schema_tokens({"kind": option} if isinstance(option, str) else option))
+    return {token for token in tokens if token and token not in {"union", "json"}}
+
+
+def _input_spec_contains_schema_token(input_spec: str, token: str) -> bool:
+    text = input_spec.lower()
+    aliases = {
+        "array": ["array", "list", "数组", "列表"],
+        "list": ["list", "array", "列表", "数组"],
+        "tuple": ["tuple", "元组"],
+        "dict": ["dict", "object", "mapping", "字典", "对象"],
+        "object": ["object", "dict", "字段", "对象", "字典"],
+        "int": ["int", "integer", "整数"],
+        "float": ["float", "number", "数值", "数字", "浮点"],
+        "number": ["number", "float", "int", "数值", "数字"],
+        "bool": ["bool", "boolean", "布尔"],
+        "str": ["str", "string", "字符串"],
+        "string": ["str", "string", "字符串"],
+        "none": ["none", "null", "空值"],
+        "null": ["none", "null", "空值"],
+    }
+    return any(alias.lower() in text for alias in aliases.get(token, [token]))
+
+
+def _example_parameter_values(item: dict[str, Any], example: Any, parameter_names: list[str]) -> dict[str, Any]:
+    if not isinstance(example, dict) or "input" not in example:
+        return {}
+    value = example.get("input")
+    if isinstance(value, dict) and all(name in value for name in parameter_names):
+        return {name: value.get(name) for name in parameter_names}
+    if len(parameter_names) == 1:
+        return {parameter_names[0]: value}
+    if isinstance(value, list) and len(value) == len(parameter_names):
+        return dict(zip(parameter_names, value))
+    return {}
+
+
+def _case_parameter_values(item: dict[str, Any], case: Any, parameter_names: list[str]) -> dict[str, Any]:
+    if not isinstance(case, dict):
+        return {}
+    if isinstance(case.get("kwargs"), dict):
+        return {name: case["kwargs"].get(name) for name in parameter_names if name in case["kwargs"]}
+    if isinstance(case.get("args"), list) and len(case["args"]) == len(parameter_names):
+        return dict(zip(parameter_names, case["args"]))
+    if "input" in case and (len(parameter_names) == 1 or bool(item.get("single_object_input"))):
+        return {parameter_names[0]: case.get("input")} if parameter_names else {}
+    return {}
+
+
+def validate_code_question_parameter_spec_contract(item: dict[str, Any], question_spec: dict[str, Any] | None) -> list[str]:
+    qid = str(item.get("id") or "<missing-id>").strip()
+    if not isinstance(question_spec, dict):
+        return [f"question.code.parameter_spec_missing:{qid}"]
+    issues: list[str] = []
+    parameter_names = _function_parameter_names(item)
+    parameters = question_spec.get("parameters") if isinstance(question_spec.get("parameters"), list) else []
+    parameter_by_name = {
+        str(parameter.get("name") or parameter.get("parameter_name") or "").strip(): parameter
+        for parameter in parameters
+        if isinstance(parameter, dict) and str(parameter.get("name") or parameter.get("parameter_name") or "").strip()
+    }
+    for name in parameter_names:
+        if name not in parameter_by_name:
+            issues.append(f"question.code.parameter_spec.parameter_missing:{name}")
+    input_spec = str(item.get("input_spec") or "")
+    for name in parameter_names:
+        parameter = parameter_by_name.get(name)
+        if not isinstance(parameter, dict):
+            continue
+        schema = parameter.get("schema")
+        if schema is None:
+            issues.append(f"question.code.parameter_spec.schema_missing:{name}")
+            continue
+        if name.lower() not in input_spec.lower():
+            issues.append(f"question.code.input_spec.schema_coverage_missing:{name}:parameter_name")
+        for token in sorted(_parameter_schema_tokens(schema)):
+            if not _input_spec_contains_schema_token(input_spec, token):
+                issues.append(f"question.code.input_spec.schema_coverage_missing:{name}:{token}")
+        for field, extractor in (
+            ("examples", _example_parameter_values),
+            ("public_tests", _case_parameter_values),
+            ("hidden_tests", _case_parameter_values),
+        ):
+            values = item.get(field) if isinstance(item.get(field), list) else []
+            for entry in values:
+                extracted = extractor(item, entry, parameter_names)
+                if name not in extracted:
+                    issues.append(f"question.code.{field}.type_mismatch:{name}:missing")
+                    continue
+                mismatches = _value_schema_mismatch_paths(extracted[name], schema)
+                for path in mismatches[:3]:
+                    issues.append(f"question.code.{field}.type_mismatch:{name}:{path}")
+    return issues
+
+
 def validate_parameter_spec_basic(data: dict[str, Any]) -> list[str]:
     issues: list[str] = []
     if not isinstance(data, dict) or not data:
@@ -1006,6 +1298,9 @@ def validate_parameter_spec_basic(data: dict[str, Any]) -> list[str]:
                 seen_parameters.add(name)
             if ptype not in PARAMETER_VALUE_TYPES:
                 issues.append(f"parameter_spec.questions.{q_index}.parameters.{p_index}.type_invalid")
+            schema = parameter.get("schema")
+            if schema is not None:
+                issues.extend(validate_parameter_schema_node(schema, context=f"parameter_spec.questions.{q_index}.parameters.{p_index}.schema"))
     return issues
 
 

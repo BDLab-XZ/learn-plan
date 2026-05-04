@@ -27,7 +27,7 @@ const questionTypeMeta = computed(() => {
 const descriptionHtml = computed(() => renderRichText(props.question.description))
 const inputSpecHtml = computed(() => renderRichText(props.question.inputSpec))
 const outputSpecHtml = computed(() => renderRichText(props.question.outputSpec))
-const constraintItems = computed(() => props.question.constraints || [])
+const calculationSpecHtml = computed(() => renderRichText(props.question.calculationSpec))
 const exampleItems = computed(() => props.question.exampleDisplays || [])
 </script>
 
@@ -61,27 +61,23 @@ const exampleItems = computed(() => props.question.exampleDisplays || [])
           <div class="rich-text" v-html="descriptionHtml" />
         </article>
 
-        <DatasetDescriptionSection :dataset="props.question.datasetDescription" />
+        <article v-if="props.question.inputSpec" class="io-spec-card input-spec">
+          <p class="eyebrow">Input</p>
+          <h3>输入说明</h3>
+          <div class="rich-text" v-html="inputSpecHtml" />
+          <DatasetDescriptionSection :dataset="props.question.datasetDescription" />
+        </article>
 
-        <div class="io-spec-grid">
-          <article v-if="props.question.inputSpec" class="io-spec-card input-spec">
-            <p class="eyebrow">Input</p>
-            <h3>输入说明</h3>
-            <div class="rich-text" v-html="inputSpecHtml" />
-          </article>
-          <article v-if="props.question.outputSpec" class="io-spec-card output-spec">
-            <p class="eyebrow">Output</p>
-            <h3>输出说明</h3>
-            <div class="rich-text" v-html="outputSpecHtml" />
-          </article>
-        </div>
+        <article v-if="props.question.outputSpec" class="io-spec-card output-spec">
+          <p class="eyebrow">Output</p>
+          <h3>输出说明</h3>
+          <div class="rich-text" v-html="outputSpecHtml" />
+        </article>
 
-        <article v-if="constraintItems.length" class="statement-card compact">
-          <p class="eyebrow">Limits</p>
-          <h3>约束条件</h3>
-          <ul class="constraint-list">
-            <li v-for="constraint in constraintItems" :key="constraint" v-html="renderRichText(constraint)" />
-          </ul>
+        <article v-if="props.question.calculationSpec" class="io-spec-card calculation-spec">
+          <p class="eyebrow">Calculation</p>
+          <h3>计算说明</h3>
+          <div class="rich-text" v-html="calculationSpecHtml" />
         </article>
 
         <ExampleDisplaySection :examples="exampleItems" />

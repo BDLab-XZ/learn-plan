@@ -327,6 +327,56 @@ class RuntimeSchemaTest(unittest.TestCase):
 
         self.assertEqual(validate_parameter_spec_basic(artifact), [])
 
+    def test_parameter_spec_accepts_nested_parameter_schema(self) -> None:
+        artifact = {
+            "schema_version": "learn-plan.parameter_spec.v1",
+            "questions": [
+                {
+                    "question_id": "code-1",
+                    "supported_runtimes": ["python"],
+                    "default_runtime": "python",
+                    "parameters": [
+                        {
+                            "name": "records",
+                            "type": "json",
+                            "schema": {
+                                "kind": "list",
+                                "element": {
+                                    "kind": "object",
+                                    "fields": {
+                                        "y_true": {"kind": "union", "any_of": [{"kind": "int"}, {"kind": "bool"}, {"kind": "str"}, {"kind": "none"}]},
+                                        "score": {"kind": "number", "min": 0, "max": 1},
+                                    },
+                                },
+                                "min_length": 1,
+                            },
+                        }
+                    ],
+                }
+            ],
+        }
+
+        self.assertEqual(validate_parameter_spec_basic(artifact), [])
+
+    def test_parameter_spec_rejects_invalid_nested_parameter_schema(self) -> None:
+        artifact = {
+            "schema_version": "learn-plan.parameter_spec.v1",
+            "questions": [
+                {
+                    "question_id": "code-1",
+                    "supported_runtimes": ["python"],
+                    "parameters": [
+                        {"name": "records", "type": "json", "schema": {"kind": "list"}},
+                        {"name": "threshold", "type": "json", "schema": {"kind": "union", "any_of": [{"kind": "number"}]}},
+                    ],
+                }
+            ],
+        }
+
+        issues = validate_parameter_spec_basic(artifact)
+        self.assertIn("parameter_spec.questions.0.parameters.0.schema.element_missing", issues)
+        self.assertIn("parameter_spec.questions.0.parameters.1.schema.any_of_invalid", issues)
+
     def test_parameter_spec_schema_rejects_unknown_runtime(self) -> None:
         artifact = {
             "schema_version": "learn-plan.parameter_spec.v1",

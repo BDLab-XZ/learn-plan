@@ -102,7 +102,7 @@ class RuntimeFrontendDemoContractTest(unittest.TestCase):
         self.assertNotIn("theme-toggle", sidebar_source)
         for marker in ("theme-toggle", "浅色模式", "深色模式", "svg", "sun-orbit", "sun-core", "sun-ray"):
             self.assertIn(marker, workspace_source)
-        for marker in ("--bg: #1a1a1a", "--bg: #fafafa", "--accent: #1a9af7", "--accent: #1677ff"):
+        for marker in ("--bg: #1c1a18", "--bg: #f5f1e6", "--accent: #c8926a", "--accent: #b26a3d"):
             self.assertIn(marker, style_source)
 
     def test_demo_layout_supports_resizable_columns(self) -> None:

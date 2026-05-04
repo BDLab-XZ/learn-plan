@@ -976,12 +976,11 @@ class Handler(BaseHTTPRequestHandler):
                             normalized_case = dict(case)
                             normalized_case.setdefault("category", category)
                             test_cases.append(normalized_case)
-            examples = question.get("examples") if isinstance(question.get("examples"), list) else []
-            public_examples = [_example_to_public_case(case) for case in examples if isinstance(case, dict)]
-            if public_examples:
-                test_cases = public_examples + [case for case in test_cases if not (isinstance(case, dict) and _case_matches_public_example(case, public_examples))]
             if not test_cases:
                 test_cases = question.get("test_cases", [])
+            if not test_cases:
+                examples = question.get("examples") if isinstance(question.get("examples"), list) else []
+                test_cases = [_example_to_public_case(case) for case in examples if isinstance(case, dict)]
         case_summaries = []
         failed_case_summaries = []
         failure_types = []
@@ -1038,10 +1037,10 @@ class Handler(BaseHTTPRequestHandler):
             "total_public_count": total_public_count,
             "passed_hidden_count": passed_hidden_count,
             "total_hidden_count": total_hidden_count,
-            "case_summaries": case_summaries,
+            "case_summaries": failed_case_summaries,
             "failed_case_summaries": failed_case_summaries,
             "failure_types": failure_types,
-            "results": case_summaries,
+            "results": failed_case_summaries,
         }
 
     def _run_function_case(self, code, function_name, case, timeout):

@@ -20,7 +20,9 @@ from learn_runtime.schemas import (
     normalize_difficulty_level,
     preflight_code_question_tests,
     REQUIRED_QUESTIONS_TOP_LEVEL,
+    validate_code_question_parameter_spec_contract,
     validate_difficulty_dimensions,
+    validate_parameter_spec_basic,
     validate_question_difficulty_fields,
     validate_question_plan_basic,
     validate_question_runtime_contract,
@@ -504,16 +506,32 @@ def summarize_question_repair_plan(review: dict[str, Any]) -> dict[str, Any]:
 
 def _runtime_context_validation_issues(data: dict[str, Any], questions: list[Any]) -> list[str]:
     issues: list[str] = []
-    sql_questions = [item for item in questions if isinstance(item, dict) and str(item.get("type") or "").strip() == "sql"]
+    runtime_questions = [
+        item for item in questions
+        if isinstance(item, dict) and (str(item.get("type") or "").strip() in {"code", "sql"} or str(item.get("category") or "").strip() == "code")
+    ]
     runtime_context = data.get("runtime_context") if isinstance(data.get("runtime_context"), dict) else {}
     if not runtime_context:
-        if sql_questions:
-            issues.append("runtime_context.missing_for_sql_questions")
+        if runtime_questions:
+            issues.append("runtime_context.missing_for_runtime_questions")
+            for item in runtime_questions:
+                qid = str(item.get("id") or "<missing-id>").strip()
+                issues.append(f"{qid}: runtime_context.parameter_spec_missing")
         return issues
     question_ids = {str(item.get("id") or "").strip() for item in questions if isinstance(item, dict) and str(item.get("id") or "").strip()}
     parameter_spec = runtime_context.get("parameter_spec") if isinstance(runtime_context.get("parameter_spec"), dict) else {}
-    parameter_questions = parameter_spec.get("questions") if isinstance(parameter_spec.get("questions"), list) else []
+    if not parameter_spec:
+        if runtime_questions:
+            issues.append("runtime_context.parameter_spec_missing")
+            for item in runtime_questions:
+                qid = str(item.get("id") or "<missing-id>").strip()
+                issues.append(f"{qid}: runtime_context.parameter_spec_missing")
+        return issues
+    issues.extend(validate_parameter_spec_basic(parameter_spec))
+    parameter_questions = parameter_spec.get("questions") if isinstance(parameter_spec.get("questions"), list) else parameter_spec.get("parameter_specs")
+    parameter_questions = parameter_questions if isinstance(parameter_questions, list) else []
     parameter_question_ids: set[str] = set()
+    parameter_spec_by_question: dict[str, dict[str, Any]] = {}
     tabular_dataset_refs: set[str] = set()
     for index, question_spec in enumerate(parameter_questions):
         if not isinstance(question_spec, dict):
@@ -521,6 +539,7 @@ def _runtime_context_validation_issues(data: dict[str, Any], questions: list[Any
         question_id = str(question_spec.get("question_id") or question_spec.get("id") or "").strip()
         if question_id:
             parameter_question_ids.add(question_id)
+            parameter_spec_by_question[question_id] = question_spec
             if question_id not in question_ids:
                 issues.append(f"runtime_context.parameter_spec.unknown_question:{question_id}")
         parameters = question_spec.get("parameters") if isinstance(question_spec.get("parameters"), list) else []
@@ -539,12 +558,13 @@ def _runtime_context_validation_issues(data: dict[str, Any], questions: list[Any
     for dataset_ref in sorted(tabular_dataset_refs):
         if dataset_ref not in dataset_ids:
             issues.append(f"runtime_context.dataset_ref_unresolved:{dataset_ref}")
-    for item in questions:
-        if not isinstance(item, dict):
-            continue
-        qid = str(item.get("id") or "").strip()
-        if str(item.get("type") or "").strip() == "sql" and qid not in parameter_question_ids:
+    for item in runtime_questions:
+        qid = str(item.get("id") or "<missing-id>").strip()
+        if qid not in parameter_question_ids:
             issues.append(f"{qid}: runtime_context.parameter_spec_missing")
+            continue
+        if str(item.get("type") or "").strip() == "code":
+            issues.extend(f"{qid}: {issue}" for issue in validate_code_question_parameter_spec_contract(item, parameter_spec_by_question.get(qid)))
     return issues
 
 

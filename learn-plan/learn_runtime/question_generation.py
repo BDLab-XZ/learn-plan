@@ -85,7 +85,7 @@ def is_valid_runtime_question(item: Any) -> bool:
                 return False
             return bool(str(item.get("starter_sql") or item.get("starter_code") or "").strip())
         if qtype == "code":
-            for key in ["title", "problem_statement", "input_spec", "output_spec", "constraints", "examples", "hidden_tests", "scoring_rubric", "capability_tags", "starter_code"]:
+            for key in ["title", "problem_statement", "input_spec", "output_spec", "calculation_spec", "constraints", "examples", "public_tests", "hidden_tests", "scoring_rubric", "capability_tags", "starter_code"]:
                 if not item.get(key):
                     return False
             if not (str(item.get("function_signature") or "").strip() or str(item.get("function_name") or "").strip()):
@@ -282,13 +282,15 @@ QUESTION_REVIEW_MAX_ATTEMPTS = 3
 RUNTIME_PRIMARY_CATEGORIES = {"lesson_focus_points", "project_tasks", "project_blockers", "review_targets"}
 TEST_GRADE_QUESTION_PROMPT_BLOCK = """所有题目统一按 test-grade 标准生成和审查，不区分学习题和测试题。
 允许的主评分题型只有 code、single_choice、multiple_choice、true_false；禁止 open / written / short_answer / free_text，禁止生成 open / written / short_answer / free_text。
-code 题必须是 LeetCode-like 结构，包含 title、problem_statement、input_spec、output_spec、constraints、examples、public_tests、hidden_tests、starter_code、function_signature 或 function_name、scoring_rubric、capability_tags。
+code 题必须是 LeetCode-like 结构，包含 title、problem_statement、input_spec、output_spec、calculation_spec、constraints、examples、public_tests、hidden_tests、starter_code、function_signature 或 function_name、scoring_rubric、capability_tags。
+code 题的五段题面必须固定分工：problem_statement 写题目详细描述与目标行为；input_spec 逐个参数写类型、嵌套结构、底层元素所有可能类型与约束；output_spec 写返回类型、结构、排序/精度/边界返回；calculation_spec 写指标、过滤、聚合、排序、比较、舍入和边界处理等计算规则；examples 写输入、输出和解释。
+code 题必须绑定 runtime_context.parameter_spec（schema_version=learn-plan.parameter_spec.v1），每个 function_signature 参数必须在 parameters[] 中声明；parameters[].type 保留 json/python_literal/dataframe/series/sql_table/ndarray/tensor 等粗类型，parameters[].schema 写机器可读递归细类型，支持 scalar、list/array、tuple、dict/object、union。
+examples、public_tests、hidden_tests 的参数值必须与 parameter_spec.parameters[].schema 一致；input_spec 必须覆盖每个参数名、关键容器类型、union 的所有基础类型与主要约束。bool 不得冒充 int。
 code 题的 problem_statement 必须是 Markdown 可读文本：不得一段到底；函数名/参数名/字段名用 `inline code`；关键行为用 **粗体**；多个条件、边界或步骤必须用列表或每条独立成行。
-code 题必须保持字段分工：problem_statement 只写任务背景与目标行为；input_spec 写输入形状和类型；output_spec 写输出形状；constraints 写限制和边界规则。禁止把输入、输出、约束、示例全部塞进 problem_statement。
 constraints 若包含多条规则，必须使用数组、Markdown bullet 或换行分隔；禁止用分号堆成一行。
 examples 必须包含输入、输出和示例解释；public_tests 可展示；hidden_tests 只用于后端提交评测，不能在初始展示 payload 或题干中泄露 hidden tests。
 选择/判断题必须包含 title、prompt、options、answer 或 answers、explanation、scoring_rubric、capability_tags；prompt 必须使用 Markdown 排版，避免纯文本一段到底。
-严格阻断：缺输入/输出说明、缺约束、缺示例解释、hidden_tests 为空、题干和测试用例不一致、题干排版一段到底、泄露 hidden tests、默认 open/written 主评分题。"""
+严格阻断：缺输入/输出/计算说明、缺 parameter_spec、示例或测试数据类型与参数规格不一致、缺约束、缺示例解释、hidden_tests 为空、题干和测试用例不一致、题干排版一段到底、泄露 hidden tests、默认 open/written 主评分题。"""
 
 
 def infer_primary_category_from_role(question_role: str) -> str:
@@ -1909,8 +1911,9 @@ def build_question_reviewer_prompt(
                 "title": item.get("title"),
                 "question": compact_source_text(str(item.get("question") or item.get("prompt") or item.get("description") or item.get("problem_statement") or ""), 420),
                 "problem_statement": compact_source_text(str(item.get("problem_statement") or ""), 700),
-                "input_spec": compact_source_text(str(item.get("input_spec") or ""), 300),
-                "output_spec": compact_source_text(str(item.get("output_spec") or ""), 300),
+                "input_spec": compact_source_text(str(item.get("input_spec") or ""), 420),
+                "output_spec": compact_source_text(str(item.get("output_spec") or ""), 360),
+                "calculation_spec": compact_source_text(str(item.get("calculation_spec") or ""), 420),
                 "constraints": compact_source_text(json_for_prompt(item.get("constraints") or "", limit=900), 450),
                 "examples": [
                     {
@@ -1949,9 +1952,9 @@ def build_question_reviewer_prompt(
             }
         )
     review_focus = {
-        "today": "1. 题目是否真正绑定当前 today 的 lesson / project / review targets，而不是泛化题库题。\n2. 覆盖是否合理：是否至少显式覆盖 lesson_focus_points、project_tasks/project_blockers、review_targets 中的重要部分。\n3. 题目质量是否可靠：题干清晰、答案可判定、解释不空泛、source_trace/question_role/tags 合理；code 题必须检查 problem_statement/input_spec/output_spec/constraints 是否可读，若题干一段到底或 constraints 用分号堆成一行，必须判 needs-revision。\n4. 若 domain 是 Git，只能围绕 Git；若是 Python，也不能漂移到当前学习主线无关主题。\n5. 如果 deterministic review 已经指出严重问题，只有在题目内容本身足以反驳这些问题时才可判通过。",
+        "today": "1. 题目是否真正绑定当前 today 的 lesson / project / review targets，而不是泛化题库题。\n2. 覆盖是否合理：是否至少显式覆盖 lesson_focus_points、project_tasks/project_blockers、review_targets 中的重要部分。\n3. 题目质量是否可靠：题干清晰、答案可判定、解释不空泛、source_trace/question_role/tags 合理；code 题必须检查 problem_statement/input_spec/output_spec/calculation_spec/constraints 是否可读，并核对 runtime_context.parameter_spec、复杂输入递归类型、示例/测试类型一致性；若题干一段到底或 constraints 用分号堆成一行，必须判 needs-revision。\n4. 若 domain 是 Git，只能围绕 Git；若是 Python，也不能漂移到当前学习主线无关主题。\n5. 如果 deterministic review 已经指出严重问题，只有在题目内容本身足以反驳这些问题时才可判通过。",
         "initial-test": "1. 题组是否真正服务 initial-test：用于判断当前起点与后续入口，而不是 today 教学或泛化题库题。\n2. 是否真正覆盖 question_scope.target_capability_ids，并形成可判定的 code/objective/concept 证据，而不是只贴 capability 标签。\n3. 是否符合 question_plan：题型、题量、难度分布、能力覆盖和 forbidden_question_types 都必须对齐。\n4. 是否显式覆盖 scope_basis、review_targets、project_tasks/project_blockers，并让这些类别服务诊断而非教学闭环。\n5. 题目质量是否可靠：题干清晰、答案可判定、解释不空泛、source_trace/question_role/tags 合理。\n6. initial-test 没有已选材料时，不要因为 material_alignment.status=missing 就单独判失败；只有当题目既缺材料绑定、又缺当前阶段/能力/诊断 blocker 绑定时，才可作为证据不足。\n7. 如果 deterministic review 已经指出 minimum_pass_shape / capability / evidence 的严重缺口，只有在题目内容本身足以反驳这些问题时才可判通过。",
-        "stage-test": "1. 题组是否真正服务阶段性测试：用于验证已学范围、近期弱项与 review debt，而不是退化成 initial-test 或 today 教学题。\n2. 覆盖是否合理：是否围绕已学内容与 review targets 做稳定度校验，而不是只检查抽象定义。\n3. 题目质量是否可靠：题干清晰、答案可判定、解释不空泛、source_trace/question_role/tags 合理；code 题必须检查 problem_statement/input_spec/output_spec/constraints 是否可读，若题干一段到底或 constraints 用分号堆成一行，必须判 needs-revision。\n4. 若 domain 是 Git，只能围绕 Git；若是 Python，也不能漂移到当前阶段性测评无关主题。\n5. 如果 deterministic review 已经指出严重问题，只有在题目内容本身足以反驳这些问题时才可判通过。",
+        "stage-test": "1. 题组是否真正服务阶段性测试：用于验证已学范围、近期弱项与 review debt，而不是退化成 initial-test 或 today 教学题。\n2. 覆盖是否合理：是否围绕已学内容与 review targets 做稳定度校验，而不是只检查抽象定义。\n3. 题目质量是否可靠：题干清晰、答案可判定、解释不空泛、source_trace/question_role/tags 合理；code 题必须检查 problem_statement/input_spec/output_spec/calculation_spec/constraints 是否可读，并核对 runtime_context.parameter_spec、复杂输入递归类型、示例/测试类型一致性；若题干一段到底或 constraints 用分号堆成一行，必须判 needs-revision。\n4. 若 domain 是 Git，只能围绕 Git；若是 Python，也不能漂移到当前阶段性测评无关主题。\n5. 如果 deterministic review 已经指出严重问题，只有在题目内容本身足以反驳这些问题时才可判通过。",
     }
     return f"""你是一个非常严格的审题 reviewer。请审查这组题目是否真的可以用于当前 {semantic_profile} session。
 

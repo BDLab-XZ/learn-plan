@@ -67,6 +67,29 @@ class RuntimeTypeContractTest(unittest.TestCase):
         true_false["answer"] = True
         self.assertTrue(is_valid_runtime_question(true_false))
 
+    def test_code_runtime_question_requires_public_tests(self) -> None:
+        question = {
+            "id": "code-add",
+            "type": "code",
+            "category": "code",
+            "title": "加法",
+            "problem_statement": "实现 `add(a, b)`。",
+            "input_spec": "`a: int`、`b: int`。",
+            "output_spec": "返回 `int`。",
+            "calculation_spec": "计算 `a + b`。",
+            "constraints": ["不做类型转换"],
+            "examples": [{"input": {"a": 1, "b": 2}, "output": 3, "explanation": "1 + 2 = 3"}],
+            "public_tests": [{"kwargs": {"a": 1, "b": 2}, "expected": 3}],
+            "hidden_tests": [{"kwargs": {"a": -1, "b": 1}, "expected": 0}],
+            "scoring_rubric": ["公开和隐藏测试通过"],
+            "capability_tags": ["python-core"],
+            "starter_code": "def add(a, b):\n    pass\n",
+            "function_signature": "def add(a, b):",
+        }
+        self.assertTrue(is_valid_runtime_question(question))
+        question.pop("public_tests")
+        self.assertFalse(is_valid_runtime_question(question))
+
     def test_validate_test_grade_question_rejects_unknown_and_raw_legacy_types(self) -> None:
         for qtype in ("single", "multi", "judge", "choice", "unknown"):
             with self.subTest(qtype=qtype):

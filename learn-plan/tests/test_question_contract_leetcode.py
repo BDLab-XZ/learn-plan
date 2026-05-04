@@ -29,6 +29,7 @@ class LeetCodeQuestionContractTest(unittest.TestCase):
             "problem_statement": "实现 `two_sum(nums, target)`。\n\n**目标**：返回两个不同元素的下标，使它们的和等于 `target`。\n\n要求：\n- 不能重复使用同一个元素\n- 返回任意一个满足条件的下标组合",
             "input_spec": "`nums: list[int]`，长度 2 到 10^4；`target: int`。",
             "output_spec": "返回 `list[int]`，包含两个不同下标，顺序不限。",
+            "calculation_spec": "从左到右扫描 `nums`，找到两个不同下标 `i` 和 `j`，满足 `nums[i] + nums[j] == target`；不得重复使用同一个元素。",
             "constraints": ["每个输入恰好存在一个答案", "不能重复使用同一个元素"],
             "examples": [
                 {
@@ -117,8 +118,10 @@ class LeetCodeQuestionContractTest(unittest.TestCase):
             "problem_statement",
             "input_spec",
             "output_spec",
+            "calculation_spec",
             "constraints",
             "examples",
+            "public_tests",
             "hidden_tests",
             "scoring_rubric",
             "capability_tags",
@@ -138,7 +141,23 @@ class LeetCodeQuestionContractTest(unittest.TestCase):
         issues = validate_submit_result_contract(result)
         self.assertIn("submit_result.failed_case_summaries_too_many", issues)
 
-    def _questions_payload(self, question: dict[str, object]) -> dict[str, object]:
+    def _parameter_spec(self, question_id: str = "code-two-sum") -> dict[str, object]:
+        return {
+            "schema_version": "learn-plan.parameter_spec.v1",
+            "questions": [
+                {
+                    "question_id": question_id,
+                    "supported_runtimes": ["python"],
+                    "default_runtime": "python",
+                    "parameters": [
+                        {"name": "nums", "type": "json", "schema": {"kind": "list", "element": {"kind": "int"}, "min_length": 2, "max_length": 10000}},
+                        {"name": "target", "type": "json", "schema": {"kind": "int"}},
+                    ],
+                }
+            ],
+        }
+
+    def _questions_payload(self, question: dict[str, object], *, include_parameter_spec: bool = True, parameter_spec: dict[str, object] | None = None) -> dict[str, object]:
         qtype = "code" if question.get("category") == "code" or question.get("type") == "code" else str(question.get("type") or "single_choice")
         level = str(question.get("difficulty_level") or "medium")
         capabilities = list(question.get("capability_tags") or []) or ["python"]
@@ -188,7 +207,7 @@ class LeetCodeQuestionContractTest(unittest.TestCase):
             "evidence": ["scope-stage-fixture"],
             "generation_trace": {"status": "ok"},
         }
-        return {
+        payload = {
             "date": "2026-04-25",
             "topic": "Python",
             "mode": "test",
@@ -223,6 +242,9 @@ class LeetCodeQuestionContractTest(unittest.TestCase):
             "materials": [],
             "questions": [question],
         }
+        if include_parameter_spec and (question.get("category") == "code" or question.get("type") == "code"):
+            payload["runtime_context"] = {"parameter_spec": parameter_spec or self._parameter_spec(str(question.get("id") or "code-two-sum"))}
+        return payload
 
     def test_validate_questions_payload_rejects_code_question_missing_test_grade_contract(self) -> None:
         question = self._code_question()
@@ -250,6 +272,51 @@ class LeetCodeQuestionContractTest(unittest.TestCase):
 
         self.assertFalse(review.get("valid"))
         self.assertTrue(any("constraints 必须用数组" in issue for issue in review.get("issues", [])))
+
+    def test_validate_questions_payload_rejects_code_question_missing_parameter_spec(self) -> None:
+        review = validate_questions_payload(self._questions_payload(self._code_question(), include_parameter_spec=False))
+
+        self.assertFalse(review.get("valid"))
+        self.assertIn("code-two-sum: runtime_context.parameter_spec_missing", review.get("issues", []))
+
+    def test_validate_questions_payload_rejects_parameter_spec_missing_signature_parameter(self) -> None:
+        parameter_spec = self._parameter_spec()
+        parameter_spec["questions"][0]["parameters"] = [parameter_spec["questions"][0]["parameters"][0]]
+
+        review = validate_questions_payload(self._questions_payload(self._code_question(), parameter_spec=parameter_spec))
+
+        self.assertFalse(review.get("valid"))
+        self.assertIn("code-two-sum: question.code.parameter_spec.parameter_missing:target", review.get("issues", []))
+
+    def test_validate_questions_payload_rejects_example_type_mismatch_against_parameter_spec(self) -> None:
+        question = self._code_question()
+        question["examples"] = [{"input": {"nums": [True, 7], "target": 8}, "output": [0, 1], "explanation": "bool 不能冒充 int。"}]
+
+        review = validate_questions_payload(self._questions_payload(question))
+
+        self.assertFalse(review.get("valid"))
+        self.assertTrue(any("question.code.examples.type_mismatch:nums:$[0]" in issue for issue in review.get("issues", [])))
+
+    def test_validate_questions_payload_rejects_public_and_hidden_type_mismatch_against_parameter_spec(self) -> None:
+        question = self._code_question()
+        question["public_tests"] = [{"kwargs": {"nums": [2, "7"], "target": 9}, "expected": [0, 1], "category": "public"}]
+        question["hidden_tests"] = [{"kwargs": {"nums": [3, 2, 4], "target": "6"}, "expected": [1, 2], "category": "hidden"}]
+
+        review = validate_questions_payload(self._questions_payload(question))
+
+        self.assertFalse(review.get("valid"))
+        issues = "\n".join(review.get("issues", []))
+        self.assertIn("question.code.public_tests.type_mismatch:nums:$[1]", issues)
+        self.assertIn("question.code.hidden_tests.type_mismatch:target:$", issues)
+
+    def test_validate_questions_payload_rejects_input_spec_schema_coverage_gap(self) -> None:
+        question = self._code_question()
+        question["input_spec"] = "`nums` 与 `target` 两个参数。"
+
+        review = validate_questions_payload(self._questions_payload(question))
+
+        self.assertFalse(review.get("valid"))
+        self.assertTrue(any("question.code.input_spec.schema_coverage_missing:nums:list" in issue for issue in review.get("issues", [])))
 
     def test_validate_questions_payload_rejects_open_question_by_default(self) -> None:
         question = {

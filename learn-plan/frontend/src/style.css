@@ -546,6 +546,10 @@ h1 {
   border-left: 3px solid var(--pass);
 }
 
+.io-spec-card.calculation-spec {
+  border-left: 3px solid #d49426;
+}
+
 .constraint-list {
   display: grid;
   gap: 6px;
@@ -668,7 +672,7 @@ h1 {
 
 .example-parameter-row {
   display: grid;
-  grid-template-columns: minmax(92px, 0.35fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
   align-items: start;
   border: 1px solid var(--rule-soft);
@@ -678,10 +682,16 @@ h1 {
 }
 
 .example-parameter-row dt {
-  color: var(--ink-soft);
+  width: fit-content;
+  max-width: 100%;
+  border-radius: 999px;
+  padding: 2px 8px;
+  color: var(--accent);
+  background: var(--accent-soft);
   font-family: var(--mono-font);
   font-size: 12px;
   font-weight: 700;
+  overflow-wrap: anywhere;
 }
 
 .example-parameter-row dd {

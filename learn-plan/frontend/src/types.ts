@@ -99,6 +99,7 @@ export interface RuntimeQuestion {
   problem_statement?: string
   input_spec?: string
   output_spec?: string
+  calculation_spec?: string
   constraints?: string[] | string
   examples?: RuntimeExample[]
   public_tests?: RuntimeTestCase[]
@@ -263,6 +264,7 @@ export interface DemoQuestion {
   description: string
   inputSpec?: string
   outputSpec?: string
+  calculationSpec?: string
   constraints?: string[]
   examples?: DemoExample[]
   exampleDisplays?: RuntimeExampleDisplay[]

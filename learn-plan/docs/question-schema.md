@@ -263,7 +263,7 @@ runtime/确定性 reviewer 会用 `difficulty_dimensions` 推导最低难度。L
 
 ## 3. 代码题（code）
 
-### 3.1 8 个必填字段
+### 3.1 代码题必填字段
 
 代码题比概念题严格得多，以下每个字段都不能为空：
 
@@ -271,10 +271,12 @@ runtime/确定性 reviewer 会用 `difficulty_dimensions` 推导最低难度。L
 |---|---|---|
 | `title` | 题目标题 | `"实现列表过滤函数"` |
 | `problem_statement` | 问题描述 | `"写一个函数，接收整数列表，过滤 None 和负数..."` |
-| `input_spec` | 输入规格 | `"scores: list[int | None] — 可能含 None 的整数列表"` |
-| `output_spec` | 输出规格 | `"list[int] — 只含非负整数的列表"` |
+| `input_spec` | 输入规格：逐个参数说明类型、嵌套结构、底层元素所有可能类型与约束 | `"scores: list[int | None] — 可能含 None 的整数列表"` |
+| `output_spec` | 输出规格：返回类型、结构、排序、精度、边界返回 | `"list[int] — 只含非负整数的列表"` |
+| `calculation_spec` | 计算说明：过滤、聚合、排序、比较、舍入和边界处理规则 | `"过滤 None 和负数，保留 0 与正整数，保持原顺序"` |
 | `constraints` | 约束条件 | `"保持原顺序，不修改原列表"` |
 | `examples` | 公开示例 | `[{"input": ..., "output": ..., "explanation": ...}]` |
+| `public_tests` | 公开测试用例，用于运行预览和可见评测 | `[{"args": [...], "expected": ...}]` |
 | `hidden_tests` | 隐藏测试用例 | `[{"args": [...], "expected": ...}]` |
 | `scoring_rubric` | 评分标准 | `[{"metric": ..., "threshold": ...}]` |
 | `capability_tags` | 能力标签 | `["python-core", "iteration"]` |
@@ -360,9 +362,10 @@ runtime/确定性 reviewer 会用 `difficulty_dimensions` 推导最低难度。L
   "category": "code",
   "title": "过滤列表中的无效值",
   "problem_statement": "实现 filter_scores 函数，接收可能含 None 和负数的整数列表，返回只含非负整数的列表，保持原顺序。",
-  "input_spec": "scores: list[int | None]",
-  "output_spec": "list[int]",
-  "constraints": "不修改原列表；保持元素顺序；None 和负数被过滤",
+  "input_spec": "`scores: list[int | None]`，列表元素可能是 `int` 或 `None`；长度可为 0，`int` 元素可为负数、0 或正数。",
+  "output_spec": "返回 `list[int]`，只包含输入中的非负整数，保持原顺序。",
+  "calculation_spec": "从左到右遍历 `scores`；跳过 `None` 和负整数；保留 `0` 与正整数；不修改原列表。",
+  "constraints": ["不修改原列表", "保持元素顺序", "None 和负数被过滤"],
   "function_signature": "def filter_scores(scores: list) -> list:",
   "function_name": "filter_scores",
   "starter_code": "def filter_scores(scores):\n    # TODO: 实现过滤逻辑\n    pass\n",
@@ -379,8 +382,10 @@ runtime/确定性 reviewer 会用 `difficulty_dimensions` 推导最低难度。L
       "explanation": "None 被过滤，-1 被过滤，0 和正数保留，顺序不变。"
     }
   ],
+  "public_tests": [
+    {"args": [[100, None, -1, 0, 88]], "expected": [100, 0, 88]}
+  ],
   "hidden_tests": [
-    {"args": [[100, None, -1, 0, 88]], "expected": [100, 0, 88]},
     {"args": [[None, None]], "expected": []},
     {"args": [[]], "expected": []}
   ],
@@ -479,7 +484,7 @@ SQL 题是 `category: "code"` 下的一类 runtime 题，但 `type` 必须为 `"
       "default_runtime": "python",
       "parameters": [
         {"name": "df", "type": "dataframe", "dataset_ref_required": true},
-        {"name": "min_amount", "type": "json"}
+        {"name": "min_amount", "type": "json", "schema": {"kind": "number", "min": 0}}
       ]
     }
   ]
@@ -487,6 +492,14 @@ SQL 题是 `category: "code"` 下的一类 runtime 题，但 `type` 必须为 `"
 ```
 
 允许的参数类型：`json`、`python_literal`、`dataframe`、`series`、`sql_table`、`ndarray`、`tensor`。
+
+`parameters[].schema` 是代码题输入的机器可读细类型契约。第一版支持：
+- 标量：`int`、`float`、`number`、`bool`、`str`/`string`、`none`/`null`、`json`
+- 容器：`list`/`array`（`element`）、`tuple`（`items`）、`dict`/`object`（`fields` 或 `key`/`value`）
+- 联合类型：`union` + `any_of`
+- 约束：`min`、`max`、`min_length`、`max_length`、`nullable`、`allowed_values`、`description`
+
+所有 code 题都必须在 `runtime_context.parameter_spec.questions[]` 中有同 id 的规格；`parameters[].name` 必须覆盖 `function_signature` 中的所有参数。`examples`、`public_tests`、`hidden_tests` 的参数值必须符合 `parameters[].schema`，且 `input_spec` 必须用自然语言覆盖每个参数名、关键容器类型、union 的所有基础类型和主要约束。
 
 ### 5.2 parameter-artifact.json
 
@@ -678,7 +691,7 @@ submit hidden failure 只返回安全摘要，例如 case id、`category: hidden
 ## 12. 排版约束
 
 - **概念题 `question` / `prompt` 字段必须使用 Markdown 排版**：代码用 ` ```python ``` ` 包裹，重点用 `**粗体**`，列表用 `- ` 或 `1. `。一段到底的纯文本不可接受。
-- **代码题必须拆分为独立字段**：`problem_statement`（问题描述）、`input_spec`（输入规格）、`output_spec`（输出规格）、`constraints`（约束条件）各自独立填写，全部非空且有实质性内容。严禁把所有内容写成一大段只塞进 `problem_statement`。
+- **代码题必须拆分为独立字段**：`problem_statement`（题目详细描述）、`input_spec`（输入说明）、`output_spec`（输出说明）、`calculation_spec`（计算说明）、`examples`（示例）构成前端五段主展示；`constraints` 仍是边界限制契约字段，但不替代计算说明。各字段必须独立填写，全部非空且有实质性内容。严禁把所有内容写成一大段只塞进 `problem_statement`。
 - **代码题 `problem_statement` 必须可扫读**：使用空行、列表、粗体、inline code 或代码块组织题面；函数名、参数名、字段名用 inline code；多个条件、边界或步骤每条独立成行。
 - **`constraints` 有多条规则时必须使用数组、Markdown bullet 或换行**，禁止用分号堆成一行。
 
@@ -697,6 +710,7 @@ submit hidden failure 只返回安全摘要，例如 case id、`category: hidden
 要求函数不修改输入列表。",
   "input_spec": "`records: list[dict]`，每个 dict 可能包含 `name: str`、`city: str`、`score: int | str`。",
   "output_spec": "`list[dict]`，只保留有效记录；每条记录包含标准化后的 `name`、`city`、`score`。",
+  "calculation_spec": "逐条扫描 `records`：`name` 为空跳过；`city` 缺失或为空时填为 `'未知'`；`score` 必须能转换为非负整数，否则跳过；返回新记录对象。",
   "constraints": [
     "`name` 为空则跳过该记录",
     "`city` 缺失或为空时填为 `'未知'`",
@@ -722,7 +736,8 @@ submit hidden failure 只返回安全摘要，例如 case id、`category: hidden
 生成 JSON 后，确认：
 - [ ] 每题含完整 difficulty 元数据：difficulty_level、difficulty_label、difficulty_score、difficulty_reason、expected_failure_mode
 - [ ] 每个概念题含 scoring_rubric、capability_tags、explanation
-- [ ] 每个代码题含全部 8 个必填字段 + hidden_tests
+- [ ] 每个代码题含完整题面契约字段：problem_statement、input_spec、output_spec、calculation_spec、constraints、examples、public_tests、hidden_tests、scoring_rubric、capability_tags
+- [ ] 每个代码题在 runtime_context.parameter_spec 中有同 id 参数规格，且示例/public/hidden 参数值与 schema 一致
 - [ ] 每个 SQL 题声明 `supported_runtimes: ["mysql"]`、`starter_sql`、dataset/parameter 引用和 `result_contract`
 - [ ] answer 类型正确：单选=int，多选=list[int]，判断=bool
 - [ ] 每个代码题的 solution_code 在本地执行正确；SQL 题不走 Python preflight
