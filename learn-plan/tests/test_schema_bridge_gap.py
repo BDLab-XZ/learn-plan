@@ -337,6 +337,7 @@ def make_valid_question_artifact() -> dict:
                                 },
                             }
                         ],
+                        "output_schema": {"kind": "list", "element": {"kind": "int"}},
                     }
                 ],
             }
@@ -351,6 +352,48 @@ def make_valid_question_artifact() -> dict:
                 "question": "执行以下代码后，`print(a)` 输出什么？\n\n```python\na = [1, 2, 3]\nb = a\nb.append(4)\nprint(a)\n```\n\n**提示**：想一想 `b = a` 是复制列表还是创建引用？",
                 "options": ["[1,2,3]", "[1,2,3,4]", "报错", "None"],
                 "answer": 1,
+                "option_diagnostics": [
+                    {
+                        "index": 0,
+                        "claim": "`[1,2,3]` 表示误以为 b = a 会复制列表。",
+                        "diagnostic_role": "distractor",
+                        "knowledge_point_ids": [{"id": "kp-variable-reference", "relevance": "primary", "confidence": 0.9}],
+                        "prerequisite_ids": [{"id": "kp-list-mutability", "confidence": 0.8}],
+                        "misconception_ids": [{"id": "mc-reference-as-copy", "confidence": 0.85}],
+                        "evidence_span": "选项 `[1,2,3]` 暴露引用赋值误解。",
+                        "diagnostic_question": "`b = a` 后 a 和 b 指向几个列表对象？",
+                    },
+                    {
+                        "index": 1,
+                        "claim": "`[1,2,3,4]` 正确表达 b.append 会修改共享列表对象。",
+                        "diagnostic_role": "correct_concept",
+                        "knowledge_point_ids": [{"id": "kp-variable-reference", "relevance": "primary", "confidence": 0.95}],
+                        "prerequisite_ids": [{"id": "kp-list-mutability", "confidence": 0.85}],
+                        "misconception_ids": [],
+                        "evidence_span": "选项 `[1,2,3,4]` 对应引用共享和原地修改。",
+                        "diagnostic_question": "为什么 b.append(4) 会影响 a？",
+                    },
+                    {
+                        "index": 2,
+                        "claim": "该代码不会因为引用赋值或 append 报错。",
+                        "diagnostic_role": "distractor",
+                        "knowledge_point_ids": [{"id": "kp-variable-reference", "relevance": "primary", "confidence": 0.8}],
+                        "prerequisite_ids": [],
+                        "misconception_ids": [{"id": "mc-list-append-error", "confidence": 0.6}],
+                        "evidence_span": "选项 `报错` 检查是否理解 append 的合法性。",
+                        "diagnostic_question": "这段代码中哪一步可能报错？为什么？",
+                    },
+                    {
+                        "index": 3,
+                        "claim": "print(a) 输出列表内容，不会输出 None。",
+                        "diagnostic_role": "distractor",
+                        "knowledge_point_ids": [{"id": "kp-variable-reference", "relevance": "primary", "confidence": 0.8}],
+                        "prerequisite_ids": [{"id": "kp-print-return", "confidence": 0.6}],
+                        "misconception_ids": [{"id": "mc-append-return-none", "confidence": 0.75}],
+                        "evidence_span": "选项 `None` 暴露把 append 返回值和 print 输出混淆。",
+                        "diagnostic_question": "append 的返回值和 print(a) 的输出有什么区别？",
+                    },
+                ],
                 "explanation": "b = a 是引用赋值，a 和 b 指向同一列表对象。",
                 "scoring_rubric": [
                     {"metric": "概念理解", "threshold": "正确识别变量引用语义"}

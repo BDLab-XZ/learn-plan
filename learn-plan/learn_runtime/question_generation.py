@@ -28,6 +28,7 @@ from learn_runtime.schemas import (
     infer_min_difficulty_from_dimensions,
     normalize_difficulty_level,
     normalize_question_difficulty_fields,
+    normalize_question_type,
     validate_difficulty_dimensions,
 )
 from learn_runtime.source_grounding import (
@@ -283,14 +284,17 @@ RUNTIME_PRIMARY_CATEGORIES = {"lesson_focus_points", "project_tasks", "project_b
 TEST_GRADE_QUESTION_PROMPT_BLOCK = """所有题目统一按 test-grade 标准生成和审查，不区分学习题和测试题。
 允许的主评分题型只有 code、single_choice、multiple_choice、true_false；禁止 open / written / short_answer / free_text，禁止生成 open / written / short_answer / free_text。
 code 题必须是 LeetCode-like 结构，包含 title、problem_statement、input_spec、output_spec、calculation_spec、constraints、examples、public_tests、hidden_tests、starter_code、function_signature 或 function_name、scoring_rubric、capability_tags。
-code 题的五段题面必须固定分工：problem_statement 写题目详细描述与目标行为；input_spec 逐个参数写类型、嵌套结构、底层元素所有可能类型与约束；output_spec 写返回类型、结构、排序/精度/边界返回；calculation_spec 写指标、过滤、聚合、排序、比较、舍入和边界处理等计算规则；examples 写输入、输出和解释。
-code 题必须绑定 runtime_context.parameter_spec（schema_version=learn-plan.parameter_spec.v1），每个 function_signature 参数必须在 parameters[] 中声明；parameters[].type 保留 json/python_literal/dataframe/series/sql_table/ndarray/tensor 等粗类型，parameters[].schema 写机器可读递归细类型，支持 scalar、list/array、tuple、dict/object、union。
-examples、public_tests、hidden_tests 的参数值必须与 parameter_spec.parameters[].schema 一致；input_spec 必须覆盖每个参数名、关键容器类型、union 的所有基础类型与主要约束。bool 不得冒充 int。
+code 题的五段题面必须固定分工：problem_statement 写题目详细描述与目标行为；input_spec 逐个参数写类型、嵌套结构、底层元素所有可能类型与约束；output_spec 逐个说明输出字段/元素的名称、类型、语义、结构、排序/精度、取值范围或枚举含义；calculation_spec 写指标、过滤、聚合、排序、比较、舍入和边界处理等计算规则；examples 写输入、输出和解释。
+code 题必须绑定 runtime_context.parameter_spec（schema_version=learn-plan.parameter_spec.v1），每个 function_signature 参数必须在 parameters[] 中声明；parameters[].type 保留 json/python_literal/dataframe/series/sql_table/ndarray/tensor 等粗类型，parameters[].schema 写机器可读递归细类型，支持 scalar、list/array、tuple、dict/object、union；每个 code 题还必须声明 runtime_context.parameter_spec.questions[].output_schema，递归描述返回值结构、字段/元素类型、allowed_values、min/max、min_length/max_length 与 description。
+examples、public_tests、hidden_tests 的参数值必须与 parameter_spec.parameters[].schema 一致，expected output 必须与 output_schema 一致；input_spec 必须覆盖每个参数名、关键容器类型、union 的所有基础类型与主要约束；output_spec 必须覆盖 output_schema 的字段名、元素类型、范围/长度/枚举值定义。bool 不得冒充 int。
+若输出是 list/tuple/object/dict，output_spec 必须递归说明底层元素或字段；若输出含 error_code、status、label、rank、score、id 等值，必须说明每个值的含义、允许范围或枚举。
 code 题的 problem_statement 必须是 Markdown 可读文本：不得一段到底；函数名/参数名/字段名用 `inline code`；关键行为用 **粗体**；多个条件、边界或步骤必须用列表或每条独立成行。
 constraints 若包含多条规则，必须使用数组、Markdown bullet 或换行分隔；禁止用分号堆成一行。
 examples 必须包含输入、输出和示例解释；public_tests 可展示；hidden_tests 只用于后端提交评测，不能在初始展示 payload 或题干中泄露 hidden tests。
 选择/判断题必须包含 title、prompt、options、answer 或 answers、explanation、scoring_rubric、capability_tags；prompt 必须使用 Markdown 排版，避免纯文本一段到底。
-严格阻断：缺输入/输出/计算说明、缺 parameter_spec、示例或测试数据类型与参数规格不一致、缺约束、缺示例解释、hidden_tests 为空、题干和测试用例不一致、题干排版一段到底、泄露 hidden tests、默认 open/written 主评分题。"""
+single_choice / multiple_choice 必须为每个选项生成 option_diagnostics，逐项写 index、claim、diagnostic_role、knowledge_point_ids、prerequisite_ids、misconception_ids、evidence_span、diagnostic_question；正确选项也要说明验证的正向概念，干扰项要说明对应误区或排除理由。
+option_diagnostics 是候选诊断证据，不是直接扣分依据；若某选项映射置信度低，应在 confidence/evidence_span 中说明，供练后 reviewer 复核。
+严格阻断：缺输入/输出/计算说明、缺 parameter_spec 或 output_schema、选择题缺 option_diagnostics 或选项级 claim/知识点/误区依据、示例或测试数据类型与参数/输出规格不一致、输出字段/元素定义不完整、输出范围/枚举缺失、缺约束、缺示例解释、hidden_tests 为空、题干和测试用例不一致、题干排版一段到底、泄露 hidden tests、默认 open/written 主评分题。"""
 
 
 def infer_primary_category_from_role(question_role: str) -> str:
@@ -403,6 +407,42 @@ def normalize_runtime_source_trace(
     return trace
 
 
+def normalize_option_diagnostics(item: dict[str, Any]) -> list[dict[str, Any]]:
+    qtype = normalize_question_type(item.get("type"))
+    if qtype not in {"single_choice", "multiple_choice"}:
+        return []
+    options = item.get("options") if isinstance(item.get("options"), list) else []
+    if len(options) < 2:
+        return []
+    raw_diagnostics = item.get("option_diagnostics") if isinstance(item.get("option_diagnostics"), list) else []
+    by_index = {entry.get("index"): entry for entry in raw_diagnostics if isinstance(entry, dict) and isinstance(entry.get("index"), int)}
+    answer_values = item.get("answers", item.get("answer"))
+    if isinstance(answer_values, list):
+        correct_indices = {index for index in answer_values if isinstance(index, int) and not isinstance(index, bool)}
+    elif isinstance(answer_values, int) and not isinstance(answer_values, bool):
+        correct_indices = {answer_values}
+    else:
+        correct_indices = set()
+    capability_tags = normalize_string_list(item.get("capability_tags") or item.get("tags") or [])
+    fallback_kp = clean_content_question_text(capability_tags[0] if capability_tags else item.get("title") or item.get("question") or "objective-question", 60)
+    knowledge_point_ids = [{"id": fallback_kp, "relevance": "primary", "confidence": 0.6}]
+    diagnostics: list[dict[str, Any]] = []
+    for index, option in enumerate(options):
+        existing = dict(by_index.get(index) or {})
+        is_correct = index in correct_indices
+        existing.setdefault("index", index)
+        existing.setdefault("claim", f"选项表达的命题：{option}")
+        existing.setdefault("diagnostic_role", "correct_concept" if is_correct else "distractor")
+        existing.setdefault("knowledge_point_ids", knowledge_point_ids)
+        existing.setdefault("prerequisite_ids", [])
+        existing.setdefault("misconception_ids", [] if is_correct else [{"id": f"mc-{fallback_kp}", "confidence": 0.5}])
+        existing.setdefault("evidence_span", f"选项文本：{option}")
+        existing.setdefault("diagnostic_question", "你为什么认为这个选项成立或不成立？")
+        existing.setdefault("confidence", 0.6)
+        diagnostics.append(existing)
+    return diagnostics
+
+
 def normalize_generated_runtime_questions(
     items: Any,
     domain: str,
@@ -445,15 +485,16 @@ def normalize_generated_runtime_questions(
         if category == "concept":
             if qtype not in {"single", "multi", "judge", "single_choice", "multiple_choice", "true_false"}:
                 continue
+            canonical_qtype = normalize_question_type(qtype)
             options = [str(item).strip() for item in raw.get("options") or [] if str(item).strip()]
-            if qtype in {"single", "multi", "single_choice", "multiple_choice"} and len(options) < 2:
+            if canonical_qtype in {"single_choice", "multiple_choice"} and len(options) < 2:
                 continue
-            answer_type = {"single_choice": "single", "multiple_choice": "multi", "true_false": "judge"}.get(qtype, qtype)
+            answer_type = {"single_choice": "single", "multiple_choice": "multi", "true_false": "judge"}.get(canonical_qtype, qtype)
             answer = normalize_llm_answer(raw.get("answers", raw.get("answer")), options, answer_type)
             item = {
                 "id": str(raw.get("id") or f"llm-runtime-c{category_counts['concept'] + 1}").strip(),
                 "category": "concept",
-                "type": qtype,
+                "type": canonical_qtype,
                 "difficulty": str(raw.get("difficulty") or "medium"),
                 "title": str(raw.get("title") or raw.get("question") or raw.get("prompt") or "概念题").strip(),
                 "prompt": str(raw.get("prompt") or raw.get("question") or "").strip(),
@@ -465,13 +506,14 @@ def normalize_generated_runtime_questions(
                 "source_trace": source_trace,
                 "source_status": str(raw.get("source_status") or default_source_status).strip() or default_source_status,
             }
-            if qtype in {"single", "multi", "single_choice", "multiple_choice", "true_false"}:
+            if canonical_qtype in {"single_choice", "multiple_choice", "true_false"}:
                 item["options"] = options[:6]
-            if qtype == "multiple_choice":
+            if canonical_qtype == "multiple_choice":
                 item["answers"] = answer
             for key in ["scoring_rubric", "capability_tags", "primary_category"]:
                 if raw.get(key):
                     item[key] = raw.get(key)
+            item["option_diagnostics"] = normalize_option_diagnostics({**raw, **item})
         elif category == "code":
             if qtype in {"code", "sql"}:
                 item = dict(raw)
@@ -1952,9 +1994,9 @@ def build_question_reviewer_prompt(
             }
         )
     review_focus = {
-        "today": "1. 题目是否真正绑定当前 today 的 lesson / project / review targets，而不是泛化题库题。\n2. 覆盖是否合理：是否至少显式覆盖 lesson_focus_points、project_tasks/project_blockers、review_targets 中的重要部分。\n3. 题目质量是否可靠：题干清晰、答案可判定、解释不空泛、source_trace/question_role/tags 合理；code 题必须检查 problem_statement/input_spec/output_spec/calculation_spec/constraints 是否可读，并核对 runtime_context.parameter_spec、复杂输入递归类型、示例/测试类型一致性；若题干一段到底或 constraints 用分号堆成一行，必须判 needs-revision。\n4. 若 domain 是 Git，只能围绕 Git；若是 Python，也不能漂移到当前学习主线无关主题。\n5. 如果 deterministic review 已经指出严重问题，只有在题目内容本身足以反驳这些问题时才可判通过。",
+        "today": "1. 题目是否真正绑定当前 today 的 lesson / project / review targets，而不是泛化题库题。\n2. 覆盖是否合理：是否至少显式覆盖 lesson_focus_points、project_tasks/project_blockers、review_targets 中的重要部分。\n3. 题目质量是否可靠：题干清晰、答案可判定、解释不空泛、source_trace/question_role/tags 合理；single_choice/multiple_choice 必须检查 option_diagnostics 是否逐选项覆盖，claim 是否可判定，knowledge_point_ids/prerequisite_ids/misconception_ids/evidence_span 是否能解释该选项；code 题必须检查 problem_statement/input_spec/output_spec/calculation_spec/constraints 是否可读，并核对 runtime_context.parameter_spec、output_schema、复杂输入递归类型、输出字段/范围定义、示例/测试输入输出类型一致性；若题干一段到底、constraints 用分号堆成一行，选择题缺选项级诊断，或 expected output 与 output_schema 不一致，必须判 needs-revision。\n4. 若 domain 是 Git，只能围绕 Git；若是 Python，也不能漂移到当前学习主线无关主题。\n5. 如果 deterministic review 已经指出严重问题，只有在题目内容本身足以反驳这些问题时才可判通过。",
         "initial-test": "1. 题组是否真正服务 initial-test：用于判断当前起点与后续入口，而不是 today 教学或泛化题库题。\n2. 是否真正覆盖 question_scope.target_capability_ids，并形成可判定的 code/objective/concept 证据，而不是只贴 capability 标签。\n3. 是否符合 question_plan：题型、题量、难度分布、能力覆盖和 forbidden_question_types 都必须对齐。\n4. 是否显式覆盖 scope_basis、review_targets、project_tasks/project_blockers，并让这些类别服务诊断而非教学闭环。\n5. 题目质量是否可靠：题干清晰、答案可判定、解释不空泛、source_trace/question_role/tags 合理。\n6. initial-test 没有已选材料时，不要因为 material_alignment.status=missing 就单独判失败；只有当题目既缺材料绑定、又缺当前阶段/能力/诊断 blocker 绑定时，才可作为证据不足。\n7. 如果 deterministic review 已经指出 minimum_pass_shape / capability / evidence 的严重缺口，只有在题目内容本身足以反驳这些问题时才可判通过。",
-        "stage-test": "1. 题组是否真正服务阶段性测试：用于验证已学范围、近期弱项与 review debt，而不是退化成 initial-test 或 today 教学题。\n2. 覆盖是否合理：是否围绕已学内容与 review targets 做稳定度校验，而不是只检查抽象定义。\n3. 题目质量是否可靠：题干清晰、答案可判定、解释不空泛、source_trace/question_role/tags 合理；code 题必须检查 problem_statement/input_spec/output_spec/calculation_spec/constraints 是否可读，并核对 runtime_context.parameter_spec、复杂输入递归类型、示例/测试类型一致性；若题干一段到底或 constraints 用分号堆成一行，必须判 needs-revision。\n4. 若 domain 是 Git，只能围绕 Git；若是 Python，也不能漂移到当前阶段性测评无关主题。\n5. 如果 deterministic review 已经指出严重问题，只有在题目内容本身足以反驳这些问题时才可判通过。",
+        "stage-test": "1. 题组是否真正服务阶段性测试：用于验证已学范围、近期弱项与 review debt，而不是退化成 initial-test 或 today 教学题。\n2. 覆盖是否合理：是否围绕已学内容与 review targets 做稳定度校验，而不是只检查抽象定义。\n3. 题目质量是否可靠：题干清晰、答案可判定、解释不空泛、source_trace/question_role/tags 合理；single_choice/multiple_choice 必须检查 option_diagnostics 是否逐选项覆盖，claim 是否可判定，knowledge_point_ids/prerequisite_ids/misconception_ids/evidence_span 是否能解释该选项；code 题必须检查 problem_statement/input_spec/output_spec/calculation_spec/constraints 是否可读，并核对 runtime_context.parameter_spec、output_schema、复杂输入递归类型、输出字段/范围定义、示例/测试输入输出类型一致性；若题干一段到底、constraints 用分号堆成一行，选择题缺选项级诊断，或 expected output 与 output_schema 不一致，必须判 needs-revision。\n4. 若 domain 是 Git，只能围绕 Git；若是 Python，也不能漂移到当前阶段性测评无关主题。\n5. 如果 deterministic review 已经指出严重问题，只有在题目内容本身足以反驳这些问题时才可判通过。",
     }
     return f"""你是一个非常严格的审题 reviewer。请审查这组题目是否真的可以用于当前 {semantic_profile} session。
 
@@ -2152,6 +2194,8 @@ def content_python_stage_and_cluster(plan_source: dict[str, Any], segment: dict[
 
 
 def apply_content_question_metadata(item: dict[str, Any], domain: str, plan_source: dict[str, Any], segment: dict[str, Any], terms: list[str]) -> dict[str, Any]:
+    if item.get("category") == "concept":
+        item["type"] = normalize_question_type(item.get("type"))
     role = str(item.get("question_role") or "learn").strip() or "learn"
     primary_category = {
         "project_task": "project_tasks",
@@ -2185,6 +2229,8 @@ def apply_content_question_metadata(item: dict[str, Any], domain: str, plan_sour
         clusters = normalize_string_list(segment.get("target_clusters") or [])
         item["cluster"] = clusters[0] if clusters else (clean_content_question_text(segment.get("label"), 60) or "content-derived")
         item["subskills"] = terms[:3]
+    if item.get("category") == "concept":
+        item["option_diagnostics"] = normalize_option_diagnostics(item)
     return item
 
 

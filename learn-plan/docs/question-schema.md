@@ -214,7 +214,44 @@ runtime/确定性 reviewer 会用 `difficulty_dimensions` 推导最低难度。L
 | `multiple_choice` | `array[int]` (非空) | `"answers": [0, 2]` |
 | `true_false` | `bool` / `int` / `"true"` / `"false"` | `"answer": true` |
 
-### 2.3 来源追溯
+### 2.3 选项级诊断契约
+
+`single_choice` / `multiple_choice` 必须为每个选项提供 `option_diagnostics`。该字段是练后诊断的候选证据，用于把错选、不确定项和漏选映射到元知识点；它不是直接扣分依据，后续 mastery 更新仍需结合练后追问与 evidence gate。
+
+每个 entry 必须覆盖一个选项：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `index` | int | 选项 0-based index，必须覆盖全部选项且不重复 |
+| `claim` | string | 该选项表达的可判定命题 |
+| `diagnostic_role` | string | `correct_concept` / `distractor` / `edge_case` / `prerequisite_probe` / `wording_probe` / `question_quality` |
+| `knowledge_point_ids` | array | 至少一个知识点映射；每项含 `id`、`relevance`、可选 `confidence` |
+| `prerequisite_ids` | array | 可选前置知识点映射 |
+| `misconception_ids` | array | 可选误区映射；干扰项应尽量提供 |
+| `evidence_span` | string | 为什么该选项映射到这些知识点/误区 |
+| `diagnostic_question` | string | 练后追问时可使用的问题 |
+| `confidence` | number | 可选，0–1；低置信度表示需练后 reviewer 复核 |
+
+`knowledge_point_ids[].relevance` 必须是 `primary` / `supporting` / `related`。`question_quality` 角色可以不提供知识点映射，用于标记题目措辞或选项本身的质量风险。
+
+示例：
+
+```json
+"option_diagnostics": [
+  {
+    "index": 1,
+    "claim": "`[1,2,3,4]` 正确表达 b.append 会修改共享列表对象。",
+    "diagnostic_role": "correct_concept",
+    "knowledge_point_ids": [{"id": "kp-variable-reference", "relevance": "primary", "confidence": 0.95}],
+    "prerequisite_ids": [{"id": "kp-list-mutability", "confidence": 0.85}],
+    "misconception_ids": [],
+    "evidence_span": "该选项对应引用共享和 append 原地修改。",
+    "diagnostic_question": "为什么 b.append(4) 会影响 a？"
+  }
+]
+```
+
+### 2.4 来源追溯
 
 每道题必须携带来源信息（至少一种）：
 
@@ -248,6 +285,48 @@ runtime/确定性 reviewer 会用 `difficulty_dimensions` 推导最低难度。L
     "trap_density": "low"
   },
   "difficulty_boundary_reason": "单点引用语义直接识别，无组合推理，因此是 basic。",
+  "option_diagnostics": [
+    {
+      "index": 0,
+      "claim": "`[1,2,3]` 表示误以为 b = a 会复制列表。",
+      "diagnostic_role": "distractor",
+      "knowledge_point_ids": [{"id": "kp-variable-reference", "relevance": "primary", "confidence": 0.9}],
+      "prerequisite_ids": [{"id": "kp-list-mutability", "confidence": 0.8}],
+      "misconception_ids": [{"id": "mc-reference-as-copy", "confidence": 0.85}],
+      "evidence_span": "该选项暴露引用赋值误解。",
+      "diagnostic_question": "`b = a` 后 a 和 b 指向几个列表对象？"
+    },
+    {
+      "index": 1,
+      "claim": "`[1,2,3,4]` 正确表达 b.append 会修改共享列表对象。",
+      "diagnostic_role": "correct_concept",
+      "knowledge_point_ids": [{"id": "kp-variable-reference", "relevance": "primary", "confidence": 0.95}],
+      "prerequisite_ids": [{"id": "kp-list-mutability", "confidence": 0.85}],
+      "misconception_ids": [],
+      "evidence_span": "该选项对应引用共享和 append 原地修改。",
+      "diagnostic_question": "为什么 b.append(4) 会影响 a？"
+    },
+    {
+      "index": 2,
+      "claim": "该代码不会因为引用赋值或 append 报错。",
+      "diagnostic_role": "distractor",
+      "knowledge_point_ids": [{"id": "kp-variable-reference", "relevance": "supporting", "confidence": 0.8}],
+      "prerequisite_ids": [],
+      "misconception_ids": [{"id": "mc-list-append-error", "confidence": 0.6}],
+      "evidence_span": "该选项检查是否理解 append 调用的合法性。",
+      "diagnostic_question": "这段代码中哪一步可能报错？为什么？"
+    },
+    {
+      "index": 3,
+      "claim": "print(a) 输出列表内容，不会输出 None。",
+      "diagnostic_role": "distractor",
+      "knowledge_point_ids": [{"id": "kp-variable-reference", "relevance": "supporting", "confidence": 0.8}],
+      "prerequisite_ids": [{"id": "kp-print-output", "confidence": 0.6}],
+      "misconception_ids": [{"id": "mc-append-return-none", "confidence": 0.75}],
+      "evidence_span": "该选项暴露把 append 返回值和 print 输出混淆。",
+      "diagnostic_question": "append 的返回值和 print(a) 的输出有什么区别？"
+    }
+  ],
   "explanation": "b = a 是引用赋值，a 和 b 指向同一列表对象。b.append(4) 修改了共享对象，所以 a 也变为 [1,2,3,4]。",
   "scoring_rubric": [
     {"metric": "概念理解", "threshold": "正确识别变量引用语义"}
@@ -272,7 +351,7 @@ runtime/确定性 reviewer 会用 `difficulty_dimensions` 推导最低难度。L
 | `title` | 题目标题 | `"实现列表过滤函数"` |
 | `problem_statement` | 问题描述 | `"写一个函数，接收整数列表，过滤 None 和负数..."` |
 | `input_spec` | 输入规格：逐个参数说明类型、嵌套结构、底层元素所有可能类型与约束 | `"scores: list[int | None] — 可能含 None 的整数列表"` |
-| `output_spec` | 输出规格：返回类型、结构、排序、精度、边界返回 | `"list[int] — 只含非负整数的列表"` |
+| `output_spec` | 输出规格：逐个说明返回字段/元素的类型、语义、结构、排序、精度、边界返回、取值范围或枚举 | `"返回 list[int]，每个元素是非负整数，取值范围 >= 0"` |
 | `calculation_spec` | 计算说明：过滤、聚合、排序、比较、舍入和边界处理规则 | `"过滤 None 和负数，保留 0 与正整数，保持原顺序"` |
 | `constraints` | 约束条件 | `"保持原顺序，不修改原列表"` |
 | `examples` | 公开示例 | `[{"input": ..., "output": ..., "explanation": ...}]` |
@@ -363,7 +442,7 @@ runtime/确定性 reviewer 会用 `difficulty_dimensions` 推导最低难度。L
   "title": "过滤列表中的无效值",
   "problem_statement": "实现 filter_scores 函数，接收可能含 None 和负数的整数列表，返回只含非负整数的列表，保持原顺序。",
   "input_spec": "`scores: list[int | None]`，列表元素可能是 `int` 或 `None`；长度可为 0，`int` 元素可为负数、0 或正数。",
-  "output_spec": "返回 `list[int]`，只包含输入中的非负整数，保持原顺序。",
+  "output_spec": "返回 `list[int]`，长度可为 0；每个元素都是来自输入 `scores` 的 `int`，语义为被保留的有效分数，取值范围为 `>= 0`；元素顺序必须与输入中出现顺序一致。",
   "calculation_spec": "从左到右遍历 `scores`；跳过 `None` 和负整数；保留 `0` 与正整数；不修改原列表。",
   "constraints": ["不修改原列表", "保持元素顺序", "None 和负数被过滤"],
   "function_signature": "def filter_scores(scores: list) -> list:",
@@ -485,7 +564,14 @@ SQL 题是 `category: "code"` 下的一类 runtime 题，但 `type` 必须为 `"
       "parameters": [
         {"name": "df", "type": "dataframe", "dataset_ref_required": true},
         {"name": "min_amount", "type": "json", "schema": {"kind": "number", "min": 0}}
-      ]
+      ],
+      "output_schema": {
+        "kind": "object",
+        "fields": {
+          "error_code": {"kind": "int", "allowed_values": [0, 1, 2], "description": "0 表示成功，1 表示无匹配记录，2 表示输入非法。"},
+          "records": {"kind": "list", "element": {"kind": "object", "fields": {"region": {"kind": "str", "description": "区域名称。"}, "amount": {"kind": "number", "min": 0, "description": "订单金额。"}}}, "description": "筛选后的记录列表。"}
+        }
+      }
     }
   ]
 }
@@ -499,7 +585,7 @@ SQL 题是 `category: "code"` 下的一类 runtime 题，但 `type` 必须为 `"
 - 联合类型：`union` + `any_of`
 - 约束：`min`、`max`、`min_length`、`max_length`、`nullable`、`allowed_values`、`description`
 
-所有 code 题都必须在 `runtime_context.parameter_spec.questions[]` 中有同 id 的规格；`parameters[].name` 必须覆盖 `function_signature` 中的所有参数。`examples`、`public_tests`、`hidden_tests` 的参数值必须符合 `parameters[].schema`，且 `input_spec` 必须用自然语言覆盖每个参数名、关键容器类型、union 的所有基础类型和主要约束。
+所有 code 题都必须在 `runtime_context.parameter_spec.questions[]` 中有同 id 的规格；`parameters[].name` 必须覆盖 `function_signature` 中的所有参数；每个 code 题必须有 `output_schema`。`examples`、`public_tests`、`hidden_tests` 的参数值必须符合 `parameters[].schema`，expected output 必须符合 `output_schema`；`input_spec` 必须用自然语言覆盖每个参数名、关键容器类型、union 的所有基础类型和主要约束，`output_spec` 必须覆盖 `output_schema` 中每个返回字段/元素的名称、类型、语义、取值范围、长度约束或枚举值含义。输出字段若是 `error_code`、`status`、`label`、`score`、`id` 等状态/类别/数值标识，schema 必须提供 `description` 以及 `allowed_values` 或 `min/max` 等范围约束。
 
 ### 5.2 parameter-artifact.json
 
@@ -737,7 +823,7 @@ submit hidden failure 只返回安全摘要，例如 case id、`category: hidden
 - [ ] 每题含完整 difficulty 元数据：difficulty_level、difficulty_label、difficulty_score、difficulty_reason、expected_failure_mode
 - [ ] 每个概念题含 scoring_rubric、capability_tags、explanation
 - [ ] 每个代码题含完整题面契约字段：problem_statement、input_spec、output_spec、calculation_spec、constraints、examples、public_tests、hidden_tests、scoring_rubric、capability_tags
-- [ ] 每个代码题在 runtime_context.parameter_spec 中有同 id 参数规格，且示例/public/hidden 参数值与 schema 一致
+- [ ] 每个代码题在 runtime_context.parameter_spec 中有同 id 参数规格和 output_schema，且示例/public/hidden 参数值与 schema 一致，expected output 与 output_schema 一致
 - [ ] 每个 SQL 题声明 `supported_runtimes: ["mysql"]`、`starter_sql`、dataset/parameter 引用和 `result_contract`
 - [ ] answer 类型正确：单选=int，多选=list[int]，判断=bool
 - [ ] 每个代码题的 solution_code 在本地执行正确；SQL 题不走 Python preflight

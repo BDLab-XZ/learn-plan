@@ -69,6 +69,7 @@ class CodeTestPreflightTest(unittest.TestCase):
                                 {"name": "b", "type": "json", "schema": {"kind": "int"}},
                                 {"name": "c", "type": "json", "schema": {"kind": "int"}},
                             ],
+                            "output_schema": {"kind": "int"},
                         }
                     ],
                 }

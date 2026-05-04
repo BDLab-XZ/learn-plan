@@ -47,6 +47,18 @@ class HiddenTestsRuntimeTest(unittest.TestCase):
                     "solution_code": "def identity(x):\n    return x\n",
                     "answer": "identity",
                     "answers": [0, 2],
+                    "option_diagnostics": [
+                        {
+                            "index": 0,
+                            "claim": "选项 0 对应正确概念。",
+                            "diagnostic_role": "correct_concept",
+                            "knowledge_point_ids": [{"id": "kp-hidden", "relevance": "primary", "confidence": 0.9}],
+                            "prerequisite_ids": [],
+                            "misconception_ids": [],
+                            "evidence_span": "不应暴露给前端。",
+                            "diagnostic_question": "为什么这个选项成立？",
+                        }
+                    ],
                     "explanation": "直接返回 x。",
                     "reference_points": ["返回输入"],
                     "grading_hint": "必须通过隐藏边界。",
@@ -82,11 +94,130 @@ class HiddenTestsRuntimeTest(unittest.TestCase):
         self.assertNotIn("orders_hidden_physical_table", rendered)
         self.assertNotIn("runtime_context", safe)
         self.assertNotIn("999001", rendered)
+        self.assertNotIn("option_diagnostics", question)
+        self.assertNotIn("kp-hidden", rendered)
         self.assertIn("examples", question)
         self.assertIn("public_tests", question)
         self.assertIn("example_displays", question)
         self.assertEqual(question["example_displays"][0]["input_parameters"][0]["name"], "x")
         self.assertEqual(question["example_displays"][0]["outputDisplay"]["repr"], "1")
+
+    def test_objective_diagnostic_triggers_map_wrong_and_uncertain_options(self) -> None:
+        server = load_server_module()
+        question = {
+            "id": "choice-q",
+            "type": "single_choice",
+            "options": ["正确项", "干扰项", "边界项"],
+            "answer": 0,
+            "capability_tags": ["python-list"],
+            "option_diagnostics": [
+                {
+                    "index": 0,
+                    "claim": "正确项验证列表原地修改概念。",
+                    "diagnostic_role": "correct_concept",
+                    "knowledge_point_ids": [{"id": "kp-list-mutability", "relevance": "primary", "confidence": 0.9}],
+                    "prerequisite_ids": [],
+                    "misconception_ids": [],
+                    "evidence_span": "正确项。",
+                    "diagnostic_question": "为什么 append 会原地修改？",
+                    "confidence": 0.9,
+                },
+                {
+                    "index": 1,
+                    "claim": "干扰项暴露复制与修改混淆。",
+                    "diagnostic_role": "distractor",
+                    "knowledge_point_ids": [{"id": "kp-list-mutability", "relevance": "primary", "confidence": 0.8}],
+                    "prerequisite_ids": [{"id": "kp-object-reference", "confidence": 0.7}],
+                    "misconception_ids": [{"id": "mc-copy-vs-mutation", "confidence": 0.8}],
+                    "evidence_span": "干扰项。",
+                    "diagnostic_question": "复制和原地修改有什么区别？",
+                },
+                {
+                    "index": 2,
+                    "claim": "边界项检查是否过度泛化。",
+                    "diagnostic_role": "edge_case",
+                    "knowledge_point_ids": [{"id": "kp-list-mutability", "relevance": "primary", "confidence": 0.7}],
+                    "prerequisite_ids": [],
+                    "misconception_ids": [],
+                    "evidence_span": "边界项。",
+                    "diagnostic_question": "这个选项为什么不是普通原地修改？",
+                },
+            ],
+        }
+
+        self.assertFalse(server.grade_concept_answer(question, [1]))
+        triggers = server.build_objective_diagnostic_triggers(question, [1], [0, 2])
+
+        self.assertEqual([item["trigger_type"] for item in triggers], ["wrong_answer", "wrong_answer", "uncertain", "uncertain"])
+        self.assertEqual(triggers[0]["option_index"], 1)
+        self.assertTrue(triggers[0]["selected"])
+        self.assertFalse(triggers[0]["is_correct_option"])
+        self.assertEqual(triggers[0]["knowledge_point_ids"], ["kp-list-mutability"])
+        self.assertEqual(triggers[0]["prerequisite_ids"], ["kp-object-reference"])
+        self.assertEqual(triggers[0]["misconception_ids"], ["mc-copy-vs-mutation"])
+        self.assertEqual(triggers[0]["diagnostic_mapping_status"], "mapped")
+        self.assertEqual(triggers[1]["option_index"], 0)
+        self.assertFalse(triggers[1]["selected"])
+        self.assertTrue(triggers[1]["is_correct_option"])
+        self.assertEqual(triggers[2]["trigger_type"], "uncertain")
+        self.assertTrue(triggers[2]["is_correct_option"])
+        self.assertEqual(triggers[3]["option_index"], 2)
+
+    def test_objective_uncertain_does_not_change_correctness(self) -> None:
+        server = load_server_module()
+        question = {
+            "id": "choice-correct-uncertain",
+            "type": "single_choice",
+            "options": ["=", "=="],
+            "answer": 0,
+            "option_diagnostics": [
+                {
+                    "index": 0,
+                    "claim": "`=` 是赋值符号。",
+                    "diagnostic_role": "correct_concept",
+                    "knowledge_point_ids": [{"id": "kp-assignment", "relevance": "primary", "confidence": 0.9}],
+                    "prerequisite_ids": [],
+                    "misconception_ids": [],
+                    "evidence_span": "正确项。",
+                    "diagnostic_question": "为什么这里不是比较？",
+                },
+                {
+                    "index": 1,
+                    "claim": "`==` 是相等比较符号。",
+                    "diagnostic_role": "distractor",
+                    "knowledge_point_ids": [{"id": "kp-assignment", "relevance": "primary", "confidence": 0.9}],
+                    "prerequisite_ids": [],
+                    "misconception_ids": [{"id": "mc-assignment-vs-equality", "confidence": 0.8}],
+                    "evidence_span": "干扰项。",
+                    "diagnostic_question": "`=` 和 `==` 分别用于什么场景？",
+                },
+            ],
+        }
+
+        self.assertTrue(server.grade_concept_answer(question, [0]))
+        triggers = server.build_objective_diagnostic_triggers(question, [0], [1])
+
+        self.assertEqual(len(triggers), 1)
+        self.assertEqual(triggers[0]["trigger_type"], "uncertain")
+        self.assertEqual(triggers[0]["option_index"], 1)
+        self.assertFalse(triggers[0]["selected"])
+        self.assertFalse(triggers[0]["is_correct_option"])
+
+        result = server.attach_result_summary(
+            {
+                "ok": True,
+                "is_correct": True,
+                "question_id": question["id"],
+                "question_type": question["type"],
+                "selected": [0],
+                "unsure": [1],
+                "diagnostic_triggers": triggers,
+            }
+        )
+        self.assertEqual(result["raw_score"], {"correct": 1, "attempted": 1, "total": 1, "ratio": 1.0})
+        self.assertEqual(result["learning_score"]["level"], "medium")
+        self.assertEqual(result["learning_score"]["uncertain_count"], 1)
+        self.assertEqual(result["review_recommendation"]["recommended_action"], "mixed_review_then_new")
 
     def test_run_function_preview_reads_public_tests_from_backend_question(self) -> None:
         server = load_server_module()
@@ -174,7 +305,58 @@ class HiddenTestsRuntimeTest(unittest.TestCase):
         self.assertEqual(result["results"], result["failed_case_summaries"])
         self.assertEqual({case["category"] for case in result["failed_case_summaries"]}, {"public", "hidden"})
         self.assertIn("wrong_answer", result["failure_types"])
+        self.assertEqual(len(result["diagnostic_triggers"]), 1)
+        trigger = result["diagnostic_triggers"][0]
+        self.assertEqual(trigger["trigger_type"], "code_failure")
+        self.assertEqual(trigger["question_id"], "code-hidden")
+        self.assertEqual(trigger["question_type"], "code")
+        self.assertEqual(trigger["failed_case_count"], 3)
+        self.assertEqual(trigger["severity"], "high")
+        self.assertTrue(trigger["requires_follow_up"])
+        self.assertEqual(result["raw_score"]["correct"], 0)
+        self.assertEqual(result["raw_score"]["total"], 6)
+        self.assertEqual(result["learning_score"]["level"], "low")
+        self.assertEqual(result["review_recommendation"]["recommended_action"], "review_first")
         self.assertNotIn("999004", repr(result))
+
+    def test_sql_submit_result_gets_failure_diagnostic_trigger(self) -> None:
+        server = load_server_module()
+        server.load_runtime_context = lambda: {}
+        server.find_question_by_id = lambda question_id: {"id": question_id, "type": "sql", "capability_tags": ["sql-join"]}
+
+        def fake_submit_sql(question, sql, runtime_context):
+            return {
+                "all_passed": False,
+                "passed_count": 0,
+                "total_count": 1,
+                "passed_public_count": 0,
+                "total_public_count": 1,
+                "passed_hidden_count": 0,
+                "total_hidden_count": 0,
+                "failed_case_summaries": [{"case": 1, "category": "public", "passed": False, "error": "wrong_answer"}],
+                "failure_types": ["wrong_answer"],
+                "results": [],
+            }
+
+        import learn_runtime.mysql_runtime as mysql_runtime
+
+        original_submit_sql = mysql_runtime.submit_sql
+        mysql_runtime.submit_sql = fake_submit_sql
+        try:
+            result = server.Handler._submit_sql_query(object(), {"question_id": "sql-q", "sql": "SELECT 1"})
+        finally:
+            mysql_runtime.submit_sql = original_submit_sql
+
+        self.assertEqual(len(result["diagnostic_triggers"]), 1)
+        trigger = result["diagnostic_triggers"][0]
+        self.assertEqual(trigger["trigger_type"], "sql_failure")
+        self.assertEqual(trigger["question_id"], "sql-q")
+        self.assertEqual(trigger["question_type"], "sql")
+        self.assertEqual(trigger["capability_tags"], ["sql-join"])
+        self.assertEqual(trigger["severity"], "medium")
+        self.assertEqual(result["raw_score"]["correct"], 0)
+        self.assertEqual(result["learning_score"]["level"], "medium_low")
+        self.assertEqual(result["review_recommendation"]["recommended_action"], "mixed_review_then_new")
 
     def test_display_safe_questions_payload_derives_public_dataset_description_only(self) -> None:
         server = load_server_module()

@@ -168,6 +168,27 @@ def sanitize_mastered_scope(values: Any) -> list[str]:
     return items
 
 
+def extract_reflection_diagnosis_debt(reflection_facts: dict[str, Any]) -> tuple[list[str], list[str]]:
+    if reflection_facts.get("status") != "completed":
+        return [], []
+    review_debt: list[str] = []
+    learning_behaviors: list[str] = []
+    diagnoses = reflection_facts.get("diagnoses") if isinstance(reflection_facts.get("diagnoses"), list) else []
+    for diagnosis in diagnoses:
+        if not isinstance(diagnosis, dict):
+            continue
+        severity = str(diagnosis.get("severity") or "").strip()
+        quality_guard = str(diagnosis.get("question_quality_guard") or "passed").strip()
+        if severity not in {"high", "medium"} or quality_guard in {"failed", "low_question_quality", "question_quality_issue"}:
+            continue
+        knowledge_id = str(diagnosis.get("knowledge_point_id") or "").strip()
+        if knowledge_id:
+            review_debt.append(knowledge_id)
+            learning_behaviors.append(f"诊断确认薄弱点：{knowledge_id}")
+        review_debt.extend(normalize_string_list(diagnosis.get("recommended_review")))
+    return review_debt, learning_behaviors
+
+
 def dedupe_evidence_log(entries: Any, *, limit: int = 50) -> list[dict[str, Any]]:
     evidence_entries = [item for item in (entries or []) if isinstance(item, dict)]
     seen: set[tuple[str, str, str, str]] = set()
@@ -211,6 +232,8 @@ def update_learner_model_from_summary(
         or weaknesses
     )
     review_debt = append_unique(review_debt, mastery_judgement.get("next_session_reinforcement"), limit=80)
+    diagnosis_review_debt, diagnosis_behaviors = extract_reflection_diagnosis_debt(reflection_facts)
+    review_debt = append_unique(review_debt, diagnosis_review_debt, limit=80)
     if pre_session_review.get("passed") is False:
         review_debt = append_unique(review_debt, pre_session_review.get("weak_points"), limit=80)
     candidate_mastered_scope = normalize_string_list(summary.get("covered_scope") or summary.get("mainline_progress"))
@@ -235,6 +258,7 @@ def update_learner_model_from_summary(
         learning_behaviors.append("提示后能稳定掌握")
     if mastery_status in {"partial", "fragile", "blocked"}:
         learning_behaviors.append(f"{mastery_status} 掌握状态需复习")
+    learning_behaviors = append_unique(learning_behaviors, diagnosis_behaviors, limit=80)
     if prompting_level and prompting_level not in {"unknown", "none", "unprompted"}:
         learning_behaviors.append(f"需要提示程度：{prompting_level}")
     updated["learning_behaviors"] = append_unique(updated.get("learning_behaviors") or [], learning_behaviors, limit=80)
@@ -275,6 +299,7 @@ def update_learner_model_from_summary(
                 "completion_signal": completion_signal,
                 "user_feedback": user_feedback,
                 "pre_session_review": pre_session_review,
+                "reflection_diagnoses": reflection_facts.get("diagnoses") if isinstance(reflection_facts.get("diagnoses"), list) else [],
             },
             stage="feedback",
             generator="learner-model-update",

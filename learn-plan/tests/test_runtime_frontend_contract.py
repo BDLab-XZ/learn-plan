@@ -23,6 +23,13 @@ class RuntimeFrontendContractTest(unittest.TestCase):
         self.assertIn("fetchJson<SubmitResult>('./run'", store_source)
         self.assertIn("question_id: question.id", store_source)
 
+    def test_objective_questions_do_not_render_run_button(self) -> None:
+        workspace_source = (SRC_DIR / "components" / "AnswerWorkspace.vue").read_text(encoding="utf-8")
+
+        self.assertIn("canRunQuestion", workspace_source)
+        self.assertIn("props.question.type === 'code' || props.question.type === 'sql'", workspace_source)
+        self.assertIn("v-if=\"canRunQuestion\"", workspace_source)
+
     def test_code_page_renders_structured_leetcode_fields(self) -> None:
         store_source = (SRC_DIR / "store" / "runtimeStore.ts").read_text(encoding="utf-8")
         tabs_source = (SRC_DIR / "components" / "ProblemInfoTabs.vue").read_text(encoding="utf-8")
@@ -49,10 +56,27 @@ class RuntimeFrontendContractTest(unittest.TestCase):
         style_source = (SRC_DIR / "style.css").read_text(encoding="utf-8")
         app_source = (SRC_DIR / "App.vue").read_text(encoding="utf-8")
 
-        for marker in ("overflow-wrap: anywhere", "min-width: 0", "overflow: hidden", "overflow: auto"):
+        for marker in ("overflow-wrap: anywhere", "word-break: break-word", "min-width: 0", "overflow: hidden", "overflow: auto"):
             self.assertIn(marker, style_source)
+        rich_text_code_block = style_source.split(".rich-text-code-block", 1)[1].split("}", 1)[0]
+        self.assertIn("overflow: auto", rich_text_code_block)
+        self.assertNotIn("white-space: pre-wrap", rich_text_code_block)
         for marker in ("column-resizer", "startColumnResize", "--sidebar-width", "--problem-width"):
             self.assertIn(marker, app_source + style_source)
+
+    def test_problem_title_tags_wrap_without_squeezing_difficulty_badge(self) -> None:
+        tabs_source = (SRC_DIR / "components" / "ProblemInfoTabs.vue").read_text(encoding="utf-8")
+        style_source = (SRC_DIR / "style.css").read_text(encoding="utf-8")
+
+        self.assertIn("title-tags", tabs_source)
+        self.assertIn("title-tag", tabs_source)
+        self.assertIn("v-for=\"tag in props.question.tags\"", tabs_source)
+        self.assertNotIn("tags.join(' / ')", tabs_source)
+        self.assertIn(".title-tags", style_source)
+        self.assertIn(".title-tag", style_source)
+        self.assertIn("flex-wrap: wrap", style_source)
+        self.assertIn("flex: 0 0 auto", style_source)
+        self.assertIn("white-space: nowrap", style_source)
 
     def test_problem_body_uses_unified_rich_text_renderer(self) -> None:
         rich_text_source = (SRC_DIR / "renderers" / "richText.ts").read_text(encoding="utf-8")
@@ -71,6 +95,18 @@ class RuntimeFrontendContractTest(unittest.TestCase):
         self.assertIn("DisplayValueView", status_source)
         self.assertIn("testCase.actualDisplay", status_source)
         self.assertIn("!hasStructuredRunCases", status_source)
+
+    def test_status_panel_renders_dual_score_summary_for_submit_results(self) -> None:
+        status_source = (SRC_DIR / "components" / "StatusPanel.vue").read_text(encoding="utf-8")
+        style_source = (SRC_DIR / "style.css").read_text(encoding="utf-8")
+
+        for marker in ("score-summary", "rawScoreText", "rawScorePercentText", "learningLevelLabel", "recommendationLabel"):
+            self.assertIn(marker, status_source)
+        self.assertIn("latestRecord.action === 'submit' && latestRecord.raw_score", status_source)
+        self.assertIn("latestRecord.learning_score?.rationale", status_source)
+        self.assertIn("latestRecord.review_recommendation.message", status_source)
+        for marker in (".score-summary", ".score-card", ".learning-score-card.medium_low", ".review-recommendation-card"):
+            self.assertIn(marker, style_source)
 
     def test_dataset_description_and_display_value_contract_are_wired(self) -> None:
         types_source = (SRC_DIR / "types.ts").read_text(encoding="utf-8")

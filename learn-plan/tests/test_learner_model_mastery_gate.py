@@ -64,6 +64,28 @@ class LearnerModelMasteryGateTest(unittest.TestCase):
         self.assertIn("闭包", model.get("mastered_scope", []))
         self.assertNotIn("闭包", model.get("prompted_mastery_scope", []))
 
+    def test_high_severity_reflection_diagnosis_adds_review_debt_after_reflection(self) -> None:
+        facts = self._facts(status="fragile", prompting_level="none")
+        facts["reflection_facts"] = {
+            "status": "completed",
+            "diagnoses": [
+                {
+                    "knowledge_point_id": "kp-closure-capture",
+                    "diagnosis": "misconception",
+                    "severity": "high",
+                    "confidence": 0.86,
+                    "question_quality_guard": "passed",
+                    "recommended_review": ["闭包变量捕获"],
+                }
+            ],
+        }
+
+        model = update_learner_model_from_summary(default_learner_model(), self._summary(), session_facts=facts, update_type="today")
+
+        self.assertIn("闭包变量捕获", model.get("review_debt", []))
+        self.assertIn("kp-closure-capture", model.get("review_debt", []))
+        self.assertIn("诊断确认薄弱点：kp-closure-capture", model.get("learning_behaviors", []))
+
 
 if __name__ == "__main__":
     unittest.main()

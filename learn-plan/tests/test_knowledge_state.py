@@ -14,6 +14,7 @@ from learn_knowledge import (
     KnowledgeStateError,
     build_default_knowledge_state,
     build_lesson_target_slice,
+    build_review_before_progress_gate,
     build_session_knowledge_evidence_items,
     build_test_coverage_slice,
     count_applicable_session_evidence,
@@ -107,6 +108,59 @@ class KnowledgeStateTest(unittest.TestCase):
         self.assertTrue(updated_point["last_tested"])
         self.assertEqual(len(updated["evidence_log"]), 1)
         self.assertEqual(updated["evidence_log"][0]["mastery_delta"], 20)
+
+    def test_high_quality_diagnostic_evidence_can_exceed_default_delta_limit(self) -> None:
+        state = self._state()
+        point = next(node for node in state["nodes"] if node["level"] == "knowledge_point")
+        point["mastery"] = 70
+        updated = update_state_from_session_evidence(
+            state,
+            session_dir=Path("/tmp/session"),
+            session_type="test",
+            evidence_items=[
+                {
+                    "knowledge_point_ids": [point["id"]],
+                    "evidence_types": ["explanation", "transfer"],
+                    "mastery_delta": -45,
+                    "confidence_after": "low",
+                    "diagnostic_evidence": {
+                        "source": "reflection.diagnoses",
+                        "severity": "high",
+                        "confidence": 0.88,
+                        "question_quality_guard": "passed",
+                        "round_count": 2,
+                    },
+                    "summary": "多轮复盘确认迁移解释不稳",
+                }
+            ],
+            summary={"overall": "诊断确认退化"},
+        )
+
+        updated_point = next(node for node in updated["nodes"] if node["id"] == point["id"])
+        self.assertEqual(updated_point["mastery"], 25)
+        self.assertEqual(updated["evidence_log"][0]["mastery_delta"], -45)
+        self.assertEqual(updated["evidence_log"][0]["diagnostic_evidence"]["source"], "reflection.diagnoses")
+
+    def test_review_before_progress_gate_recommends_review_without_auto_blocking(self) -> None:
+        gate = build_review_before_progress_gate(
+            [
+                {
+                    "id": "kp-window",
+                    "title": "滚动窗口统计",
+                    "level": "knowledge_point",
+                    "baseline_mastery": 85,
+                    "previous_stage_mastery": 82,
+                    "weekly_mastery": 78,
+                    "mastery": 42,
+                    "stability": "declining",
+                }
+            ]
+        )
+
+        self.assertEqual(gate["recommended_action"], "review_first")
+        self.assertTrue(gate["requires_user_confirmation"])
+        self.assertFalse(gate["blocks_advance"])
+        self.assertEqual(gate["review_targets"], ["kp-window"])
 
     def test_invalid_session_evidence_does_not_write_history_or_log(self) -> None:
         state = self._state()

@@ -114,6 +114,28 @@ class RuntimeSchemaTest(unittest.TestCase):
                     "question": "Python 中哪个符号用于 **变量赋值**？\n\n- 请选择一个最准确的答案。",
                     "options": ["=", "=="],
                     "answer": 0,
+                    "option_diagnostics": [
+                        {
+                            "index": 0,
+                            "claim": "`=` 是 Python 的赋值符号。",
+                            "diagnostic_role": "correct_concept",
+                            "knowledge_point_ids": [{"id": "kp-python-assignment", "relevance": "primary", "confidence": 0.9}],
+                            "prerequisite_ids": [],
+                            "misconception_ids": [],
+                            "evidence_span": "选项 `=` 对应变量赋值语法。",
+                            "diagnostic_question": "你如何区分赋值符号和比较符号？",
+                        },
+                        {
+                            "index": 1,
+                            "claim": "`==` 是 Python 的相等比较符号。",
+                            "diagnostic_role": "distractor",
+                            "knowledge_point_ids": [{"id": "kp-python-assignment", "relevance": "primary", "confidence": 0.9}],
+                            "prerequisite_ids": [],
+                            "misconception_ids": [{"id": "mc-assignment-vs-equality", "confidence": 0.8}],
+                            "evidence_span": "选项 `==` 容易暴露赋值与相等比较混淆。",
+                            "diagnostic_question": "什么时候应该使用 `==` 而不是 `=`？",
+                        },
+                    ],
                     "explanation": "= 用于赋值。",
                     "scoring_rubric": [{"metric": "概念理解", "threshold": "识别赋值符号"}],
                     "capability_tags": ["python-assignment"],
@@ -358,6 +380,43 @@ class RuntimeSchemaTest(unittest.TestCase):
 
         self.assertEqual(validate_parameter_spec_basic(artifact), [])
 
+    def test_parameter_spec_accepts_output_schema(self) -> None:
+        artifact = {
+            "schema_version": "learn-plan.parameter_spec.v1",
+            "questions": [
+                {
+                    "question_id": "code-1",
+                    "supported_runtimes": ["python"],
+                    "default_runtime": "python",
+                    "parameters": [{"name": "payload", "type": "json", "schema": {"kind": "object", "fields": {"raw": {"kind": "str"}}}}],
+                    "output_schema": {
+                        "kind": "object",
+                        "fields": {
+                            "error_code": {"kind": "int", "allowed_values": [0, 1, 2], "description": "0 表示成功，1 表示输入为空，2 表示格式非法。"},
+                            "message": {"kind": "str", "max_length": 200, "description": "面向用户的错误说明。"},
+                        },
+                    },
+                }
+            ],
+        }
+
+        self.assertEqual(validate_parameter_spec_basic(artifact), [])
+
+    def test_parameter_spec_rejects_invalid_output_schema(self) -> None:
+        artifact = {
+            "schema_version": "learn-plan.parameter_spec.v1",
+            "questions": [
+                {
+                    "question_id": "code-1",
+                    "supported_runtimes": ["python"],
+                    "parameters": [],
+                    "output_schema": {"kind": "list"},
+                }
+            ],
+        }
+
+        self.assertIn("parameter_spec.questions.0.output_schema.element_missing", validate_parameter_spec_basic(artifact))
+
     def test_parameter_spec_rejects_invalid_nested_parameter_schema(self) -> None:
         artifact = {
             "schema_version": "learn-plan.parameter_spec.v1",
@@ -460,6 +519,28 @@ class RuntimeSchemaTest(unittest.TestCase):
                     "question": "Python 中哪个符号用于变量赋值？",
                     "options": ["=", "=="],
                     "answer": 0,
+                    "option_diagnostics": [
+                        {
+                            "index": 0,
+                            "claim": "`=` 是 Python 的赋值符号。",
+                            "diagnostic_role": "correct_concept",
+                            "knowledge_point_ids": [{"id": "kp-python-assignment", "relevance": "primary", "confidence": 0.9}],
+                            "prerequisite_ids": [],
+                            "misconception_ids": [],
+                            "evidence_span": "选项 `=` 对应变量赋值语法。",
+                            "diagnostic_question": "你如何区分赋值符号和比较符号？",
+                        },
+                        {
+                            "index": 1,
+                            "claim": "`==` 是 Python 的相等比较符号。",
+                            "diagnostic_role": "distractor",
+                            "knowledge_point_ids": [{"id": "kp-python-assignment", "relevance": "primary", "confidence": 0.9}],
+                            "prerequisite_ids": [],
+                            "misconception_ids": [{"id": "mc-assignment-vs-equality", "confidence": 0.8}],
+                            "evidence_span": "选项 `==` 容易暴露赋值与相等比较混淆。",
+                            "diagnostic_question": "什么时候应该使用 `==` 而不是 `=`？",
+                        },
+                    ],
                     "difficulty_level": "basic",
                 }
             ],

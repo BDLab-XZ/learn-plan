@@ -37,6 +37,19 @@ class RuntimeTypeContractTest(unittest.TestCase):
             "title": "列表可变性",
             "prompt": "以下哪个操作会原地修改列表 xs？",
             "options": ["xs.append(1)", "xs + [1]", "tuple(xs)", "xs.copy()"],
+            "option_diagnostics": [
+                {
+                    "index": index,
+                    "claim": f"选项 {index} 关于列表可变性的判断。",
+                    "diagnostic_role": "correct_concept" if index == 0 else "distractor",
+                    "knowledge_point_ids": [{"id": "kp-list-mutability", "relevance": "primary", "confidence": 0.9}],
+                    "prerequisite_ids": [],
+                    "misconception_ids": [] if index == 0 else [{"id": "mc-copy-vs-mutation", "confidence": 0.8}],
+                    "evidence_span": "选项文本可用于判断是否理解原地修改。",
+                    "diagnostic_question": "你如何区分原地修改和创建新对象？",
+                }
+                for index in range(4)
+            ],
             "answer": 0,
             "explanation": "append 会原地修改列表。",
             "scoring_rubric": ["识别原地修改"],
@@ -120,6 +133,18 @@ class RuntimeTypeContractTest(unittest.TestCase):
         """Vue SPA enforces question types via TypeScript union, not runtime guards."""
         types_src = FRONTEND_SRC.read_text(encoding="utf-8")
         self.assertIn("export type QuestionType = 'code' | 'sql' | 'single_choice' | 'multiple_choice' | 'true_false'", types_src)
+        self.assertIn("export interface DiagnosticTrigger", types_src)
+        self.assertIn("export interface RawScore", types_src)
+        self.assertIn("export interface LearningScore", types_src)
+        self.assertIn("export interface ReviewRecommendation", types_src)
+        self.assertIn("export interface ResultSummary", types_src)
+        self.assertIn("diagnostic_triggers?: DiagnosticTrigger[]", types_src)
+        self.assertIn("selected?: number[]", types_src)
+        self.assertIn("unsure?: number[]", types_src)
+        self.assertIn("raw_score?: RawScore", types_src)
+        self.assertIn("learning_score?: LearningScore", types_src)
+        self.assertIn("review_recommendation?: ReviewRecommendation", types_src)
+        self.assertIn("result_summary?: ResultSummary", types_src)
 
         sidebar_src = (SKILL_DIR / "frontend" / "src" / "components" / "Sidebar.vue").read_text(encoding="utf-8")
         self.assertIn("sql: 'SQL'", sidebar_src)

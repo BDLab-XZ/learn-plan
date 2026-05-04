@@ -28,7 +28,7 @@ class LeetCodeQuestionContractTest(unittest.TestCase):
             "title": "两数之和：返回满足目标和的下标",
             "problem_statement": "实现 `two_sum(nums, target)`。\n\n**目标**：返回两个不同元素的下标，使它们的和等于 `target`。\n\n要求：\n- 不能重复使用同一个元素\n- 返回任意一个满足条件的下标组合",
             "input_spec": "`nums: list[int]`，长度 2 到 10^4；`target: int`。",
-            "output_spec": "返回 `list[int]`，包含两个不同下标，顺序不限。",
+            "output_spec": "返回 `list[int]`，长度固定为 2；每个元素是 `nums` 中的下标，类型为 `int`，取值范围从 0 到 `len(nums) - 1`；两个下标必须不同，顺序不限。",
             "calculation_spec": "从左到右扫描 `nums`，找到两个不同下标 `i` 和 `j`，满足 `nums[i] + nums[j] == target`；不得重复使用同一个元素。",
             "constraints": ["每个输入恰好存在一个答案", "不能重复使用同一个元素"],
             "examples": [
@@ -53,18 +53,37 @@ class LeetCodeQuestionContractTest(unittest.TestCase):
             "explanation": "可用哈希表记录已访问数字。",
         }
 
+    def _option_diagnostics(self, options: list[str], correct_indices: set[int] | None = None) -> list[dict[str, object]]:
+        correct_indices = correct_indices or {0}
+        return [
+            {
+                "index": index,
+                "claim": f"选项 {option} 关于列表可变性的判断。",
+                "diagnostic_role": "correct_concept" if index in correct_indices else "distractor",
+                "knowledge_point_ids": [{"id": "kp-list-mutability", "relevance": "primary", "confidence": 0.9}],
+                "prerequisite_ids": [{"id": "kp-python-object-reference", "confidence": 0.7}],
+                "misconception_ids": [] if index in correct_indices else [{"id": "mc-copy-vs-mutation", "confidence": 0.8}],
+                "evidence_span": f"选项文本：{option}",
+                "diagnostic_question": "你如何区分原地修改和创建新对象？",
+                "confidence": 0.85,
+            }
+            for index, option in enumerate(options)
+        ]
+
     def _objective_question(self) -> dict[str, object]:
+        options = ["xs.append(1)", "xs + [1]", "tuple(xs)", "xs.copy()"]
         return {
             "id": "choice-mutability",
             "type": "single_choice",
             "category": "concept",
             "title": "Python 列表可变性判断",
             "prompt": "以下哪个操作会原地修改列表 xs？",
-            "options": ["xs.append(1)", "xs + [1]", "tuple(xs)", "xs.copy()"],
+            "options": options,
             "answer": 0,
             "explanation": "append 会原地修改列表，其他选项会创建新对象或转换对象。",
             "scoring_rubric": ["识别列表原地修改 API", "区分新对象创建与原地变更"],
             "capability_tags": ["python-list", "mutability"],
+            "option_diagnostics": self._option_diagnostics(options),
             "source_trace": {"question_source": "test-fixture"},
         }
 
@@ -99,6 +118,74 @@ class LeetCodeQuestionContractTest(unittest.TestCase):
     def test_canonical_objective_question_contract_passes(self) -> None:
         self.assertEqual(validate_objective_question_contract(self._objective_question()), [])
         self.assertEqual(validate_test_grade_question(self._objective_question()), [])
+
+    def test_single_and_multiple_choice_require_option_diagnostics(self) -> None:
+        question = self._objective_question()
+        question.pop("option_diagnostics", None)
+
+        self.assertIn("question.objective.option_diagnostics_missing", validate_objective_question_contract(question))
+
+    def test_option_diagnostics_must_cover_each_option_once(self) -> None:
+        question = self._objective_question()
+        question["option_diagnostics"] = list(question["option_diagnostics"])[1:]
+        count_issues = validate_objective_question_contract(question)
+        self.assertIn("question.objective.option_diagnostics_count_mismatch", count_issues)
+        self.assertIn("question.objective.option_diagnostics_index_coverage_missing", count_issues)
+
+        question = self._objective_question()
+        diagnostics = list(question["option_diagnostics"])
+        diagnostics[1] = {**diagnostics[1], "index": 0}
+        duplicate_issues = validate_objective_question_contract({**question, "option_diagnostics": diagnostics})
+        self.assertIn("question.objective.option_diagnostics.1.index_duplicate", duplicate_issues)
+        self.assertIn("question.objective.option_diagnostics_index_coverage_missing", duplicate_issues)
+
+    def test_option_diagnostics_require_claim_role_evidence_and_knowledge_mapping(self) -> None:
+        question = self._objective_question()
+        diagnostic = dict(question["option_diagnostics"][0])
+        for field in ("claim", "diagnostic_role", "evidence_span", "diagnostic_question"):
+            diagnostic[field] = ""
+        diagnostic["knowledge_point_ids"] = []
+        diagnostic["confidence"] = 1.2
+        diagnostic["prerequisite_ids"] = [{"id": "kp-python-object-reference", "confidence": -0.1}]
+        diagnostic["misconception_ids"] = [""]
+        diagnostics = list(question["option_diagnostics"])
+        diagnostics[0] = diagnostic
+
+        issues = validate_objective_question_contract({**question, "option_diagnostics": diagnostics})
+
+        for expected in (
+            "question.objective.option_diagnostics.0.claim_missing",
+            "question.objective.option_diagnostics.0.diagnostic_role_missing",
+            "question.objective.option_diagnostics.0.evidence_span_missing",
+            "question.objective.option_diagnostics.0.diagnostic_question_missing",
+            "question.objective.option_diagnostics.0.knowledge_point_ids_missing",
+            "question.objective.option_diagnostics.0.confidence_invalid",
+            "question.objective.option_diagnostics.0.prerequisite_ids.0.confidence_invalid",
+            "question.objective.option_diagnostics.0.misconception_ids.0.id_missing",
+        ):
+            self.assertIn(expected, issues)
+
+    def test_option_diagnostics_validate_relevance_and_role(self) -> None:
+        question = self._objective_question()
+        diagnostic = dict(question["option_diagnostics"][0])
+        diagnostic["diagnostic_role"] = "unknown"
+        diagnostic["knowledge_point_ids"] = [{"id": "kp-list-mutability", "relevance": "weak", "confidence": 0.7}]
+        diagnostics = list(question["option_diagnostics"])
+        diagnostics[0] = diagnostic
+
+        issues = validate_objective_question_contract({**question, "option_diagnostics": diagnostics})
+
+        self.assertIn("question.objective.option_diagnostics.0.diagnostic_role_invalid", issues)
+        self.assertIn("question.objective.option_diagnostics.0.knowledge_point_ids.0.relevance_invalid", issues)
+
+    def test_true_false_option_diagnostics_remain_optional_for_first_pass(self) -> None:
+        question = self._objective_question()
+        question["type"] = "true_false"
+        question["options"] = ["正确", "错误"]
+        question["answer"] = True
+        question.pop("option_diagnostics", None)
+
+        self.assertNotIn("question.objective.option_diagnostics_missing", validate_objective_question_contract(question))
 
     def test_open_written_questions_are_not_test_grade_by_default(self) -> None:
         question = {
@@ -153,6 +240,7 @@ class LeetCodeQuestionContractTest(unittest.TestCase):
                         {"name": "nums", "type": "json", "schema": {"kind": "list", "element": {"kind": "int"}, "min_length": 2, "max_length": 10000}},
                         {"name": "target", "type": "json", "schema": {"kind": "int"}},
                     ],
+                    "output_schema": {"kind": "list", "element": {"kind": "int", "min": 0}, "min_length": 2, "max_length": 2},
                 }
             ],
         }
@@ -279,6 +367,68 @@ class LeetCodeQuestionContractTest(unittest.TestCase):
         self.assertFalse(review.get("valid"))
         self.assertIn("code-two-sum: runtime_context.parameter_spec_missing", review.get("issues", []))
 
+    def test_validate_questions_payload_rejects_code_question_missing_output_schema(self) -> None:
+        parameter_spec = self._parameter_spec()
+        parameter_spec["questions"][0].pop("output_schema", None)
+
+        review = validate_questions_payload(self._questions_payload(self._code_question(), parameter_spec=parameter_spec))
+
+        self.assertFalse(review.get("valid"))
+        self.assertIn("code-two-sum: question.code.output_schema_missing:code-two-sum", review.get("issues", []))
+
+    def test_validate_questions_payload_rejects_output_values_mismatching_output_schema(self) -> None:
+        question = self._code_question()
+        question["examples"] = [{"input": {"nums": [2, 7], "target": 9}, "output": [0, "1"], "explanation": "输出元素必须是 int。"}]
+        question["public_tests"] = [{"kwargs": {"nums": [2, 7], "target": 9}, "expected": [0, 1, 2], "category": "public"}]
+        question["hidden_tests"] = [{"kwargs": {"nums": [3, 2, 4], "target": 6}, "expected": [-1, 2], "category": "hidden"}]
+
+        review = validate_questions_payload(self._questions_payload(question))
+
+        self.assertFalse(review.get("valid"))
+        issues = "\n".join(review.get("issues", []))
+        self.assertIn("question.code.examples.output_type_mismatch:$[1]", issues)
+        self.assertIn("question.code.public_tests.output_type_mismatch:$", issues)
+        self.assertIn("question.code.hidden_tests.output_type_mismatch:$[0]", issues)
+
+    def test_validate_questions_payload_rejects_output_spec_schema_coverage_gap(self) -> None:
+        question = self._code_question()
+        question["output_spec"] = "返回对象，包含 error_code 和 message。"
+        parameter_spec = self._parameter_spec()
+        parameter_spec["questions"][0]["output_schema"] = {
+            "kind": "object",
+            "fields": {
+                "error_code": {"kind": "int", "allowed_values": [0, 1, 2], "description": "0 表示成功，1 表示未找到答案，2 表示输入非法。"},
+                "message": {"kind": "str", "max_length": 200, "description": "结果说明文本。"},
+            },
+        }
+        question["examples"] = [{"input": {"nums": [2, 7], "target": 9}, "output": {"error_code": 0, "message": "ok"}, "explanation": "0 表示成功。"}]
+        question["public_tests"] = [{"kwargs": {"nums": [2, 7], "target": 9}, "expected": {"error_code": 0, "message": "ok"}, "category": "public"}]
+        question["hidden_tests"] = [{"kwargs": {"nums": [3, 2, 4], "target": 6}, "expected": {"error_code": 0, "message": "ok"}, "category": "hidden"}]
+
+        review = validate_questions_payload(self._questions_payload(question, parameter_spec=parameter_spec))
+
+        self.assertFalse(review.get("valid"))
+        issues = "\n".join(review.get("issues", []))
+        self.assertIn("question.code.output_spec.schema_coverage_missing:int", issues)
+        self.assertIn("question.code.output_spec.schema_coverage_missing:0", issues)
+        self.assertIn("question.code.output_spec.schema_coverage_missing:200", issues)
+
+    def test_validate_questions_payload_rejects_output_schema_field_without_definition_or_range(self) -> None:
+        question = self._code_question()
+        question["output_spec"] = "返回 object/dict 对象，包含 error_code，类型为 int。"
+        parameter_spec = self._parameter_spec()
+        parameter_spec["questions"][0]["output_schema"] = {"kind": "object", "fields": {"error_code": {"kind": "int"}}}
+        question["examples"] = [{"input": {"nums": [2, 7], "target": 9}, "output": {"error_code": 0}, "explanation": "返回状态码。"}]
+        question["public_tests"] = [{"kwargs": {"nums": [2, 7], "target": 9}, "expected": {"error_code": 0}, "category": "public"}]
+        question["hidden_tests"] = [{"kwargs": {"nums": [3, 2, 4], "target": 6}, "expected": {"error_code": 0}, "category": "hidden"}]
+
+        review = validate_questions_payload(self._questions_payload(question, parameter_spec=parameter_spec))
+
+        self.assertFalse(review.get("valid"))
+        issues = "\n".join(review.get("issues", []))
+        self.assertIn("question.code.output_schema.description_missing:$.error_code", issues)
+        self.assertIn("question.code.output_schema.range_missing:$.error_code", issues)
+
     def test_validate_questions_payload_rejects_parameter_spec_missing_signature_parameter(self) -> None:
         parameter_spec = self._parameter_spec()
         parameter_spec["questions"][0]["parameters"] = [parameter_spec["questions"][0]["parameters"][0]]
@@ -351,7 +501,17 @@ class LeetCodeQuestionContractTest(unittest.TestCase):
         self.assertIn("problem_statement", prompt)
         self.assertIn("input_spec", prompt)
         self.assertIn("output_spec", prompt)
+        self.assertIn("output_schema", prompt)
+        self.assertIn("字段/元素", prompt)
+        self.assertIn("取值范围", prompt)
+        self.assertIn("枚举", prompt)
+        self.assertIn("expected output", prompt)
         self.assertIn("constraints", prompt)
+        self.assertIn("option_diagnostics", prompt)
+        self.assertIn("claim", prompt)
+        self.assertIn("knowledge_point_ids", prompt)
+        self.assertIn("misconception_ids", prompt)
+        self.assertIn("prerequisite_ids", prompt)
         self.assertIn("examples", prompt)
         self.assertIn("public_tests", prompt)
         self.assertIn("hidden_tests", prompt)
@@ -382,11 +542,18 @@ class LeetCodeQuestionContractTest(unittest.TestCase):
             "constraints",
             "示例解释",
             "hidden_tests",
+            "output_schema",
+            "字段/范围定义",
+            "expected output 与 output_schema 不一致",
             "题干和测试用例不一致",
             "禁止 open / written / short_answer / free_text",
             "泄露 hidden tests",
             "Markdown 可读文本",
             "分号堆成一行",
+            "option_diagnostics",
+            "选项级诊断",
+            "knowledge_point_ids",
+            "misconception_ids",
         ):
             self.assertIn(required, prompt)
         self.assertNotIn("code/open/concept", prompt)

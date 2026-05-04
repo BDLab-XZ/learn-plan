@@ -44,6 +44,8 @@ DIFFICULTY_DEFAULT_SCORES = {
 TRANSFER_DISTANCE_VALUES = {"direct", "near", "far"}
 IMPLEMENTATION_COMPLEXITY_VALUES = {"none", "single_step", "multi_step", "stateful"}
 TRAP_DENSITY_VALUES = {"low", "medium", "high"}
+OPTION_DIAGNOSTIC_ROLES = {"correct_concept", "distractor", "edge_case", "prerequisite_probe", "wording_probe", "question_quality"}
+OPTION_DIAGNOSTIC_RELEVANCE_VALUES = {"primary", "supporting", "related"}
 DIFFICULTY_ALIASES = {
     "easy": "basic",
     "基础": "basic",
@@ -574,6 +576,99 @@ def validate_code_question_contract(item: dict[str, Any]) -> list[str]:
     return issues
 
 
+def _normalize_confidence_float(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number < 0 or number > 1:
+        return None
+    return number
+
+
+def _diagnostic_ref_ids(value: Any) -> list[str]:
+    values = value if isinstance(value, list) else []
+    ids: list[str] = []
+    for item in values:
+        if isinstance(item, dict):
+            ref_id = str(item.get("id") or item.get("knowledge_point_id") or item.get("misconception_id") or "").strip()
+        else:
+            ref_id = str(item or "").strip()
+        if ref_id:
+            ids.append(ref_id)
+    return ids
+
+
+def _validate_diagnostic_refs(value: Any, *, context: str, require_relevance: bool = False) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        return [f"{context}.not_list"]
+    issues: list[str] = []
+    for index, item in enumerate(value):
+        if isinstance(item, str):
+            if not item.strip():
+                issues.append(f"{context}.{index}.id_missing")
+            continue
+        if not isinstance(item, dict):
+            issues.append(f"{context}.{index}.not_object")
+            continue
+        ref_id = str(item.get("id") or item.get("knowledge_point_id") or item.get("misconception_id") or "").strip()
+        if not ref_id:
+            issues.append(f"{context}.{index}.id_missing")
+        if "confidence" in item and _normalize_confidence_float(item.get("confidence")) is None:
+            issues.append(f"{context}.{index}.confidence_invalid")
+        relevance = str(item.get("relevance") or "").strip()
+        if require_relevance and relevance not in OPTION_DIAGNOSTIC_RELEVANCE_VALUES:
+            issues.append(f"{context}.{index}.relevance_invalid")
+    return issues
+
+
+def validate_option_diagnostics_contract(item: dict[str, Any]) -> list[str]:
+    qtype = str(item.get("type") or "").strip()
+    if qtype not in {"single_choice", "multiple_choice"}:
+        return []
+    options = item.get("options") if isinstance(item.get("options"), list) else []
+    diagnostics = item.get("option_diagnostics")
+    if not isinstance(diagnostics, list) or not diagnostics:
+        return ["question.objective.option_diagnostics_missing"]
+    issues: list[str] = []
+    if len(diagnostics) != len(options):
+        issues.append("question.objective.option_diagnostics_count_mismatch")
+    seen_indices: set[int] = set()
+    for entry_index, diagnostic in enumerate(diagnostics):
+        context = f"question.objective.option_diagnostics.{entry_index}"
+        if not isinstance(diagnostic, dict):
+            issues.append(f"{context}.not_object")
+            continue
+        index = diagnostic.get("index")
+        if not isinstance(index, int) or isinstance(index, bool) or index < 0 or index >= len(options):
+            issues.append(f"{context}.index_invalid")
+        elif index in seen_indices:
+            issues.append(f"{context}.index_duplicate")
+        else:
+            seen_indices.add(index)
+        for field in ("claim", "diagnostic_role", "evidence_span"):
+            if not str(diagnostic.get(field) or "").strip():
+                issues.append(f"{context}.{field}_missing")
+        role = str(diagnostic.get("diagnostic_role") or "").strip()
+        if role and role not in OPTION_DIAGNOSTIC_ROLES:
+            issues.append(f"{context}.diagnostic_role_invalid")
+        if "confidence" in diagnostic and _normalize_confidence_float(diagnostic.get("confidence")) is None:
+            issues.append(f"{context}.confidence_invalid")
+        knowledge_ids = _diagnostic_ref_ids(diagnostic.get("knowledge_point_ids"))
+        if not knowledge_ids and role != "question_quality":
+            issues.append(f"{context}.knowledge_point_ids_missing")
+        issues.extend(_validate_diagnostic_refs(diagnostic.get("knowledge_point_ids"), context=f"{context}.knowledge_point_ids", require_relevance=True))
+        issues.extend(_validate_diagnostic_refs(diagnostic.get("prerequisite_ids"), context=f"{context}.prerequisite_ids"))
+        issues.extend(_validate_diagnostic_refs(diagnostic.get("misconception_ids"), context=f"{context}.misconception_ids"))
+        if not str(diagnostic.get("diagnostic_question") or "").strip():
+            issues.append(f"{context}.diagnostic_question_missing")
+    if len(seen_indices) != len(options):
+        issues.append("question.objective.option_diagnostics_index_coverage_missing")
+    return issues
+
+
 def validate_objective_question_contract(item: dict[str, Any]) -> list[str]:
     issues: list[str] = []
     if not isinstance(item, dict):
@@ -597,6 +692,7 @@ def validate_objective_question_contract(item: dict[str, Any]) -> list[str]:
         issues.append("question.objective.answers_missing")
     if qtype == "true_false" and not isinstance(item.get("answer"), (bool, int, str)):
         issues.append("question.objective.answer_missing")
+    issues.extend(validate_option_diagnostics_contract(item))
     return issues
 
 
@@ -1123,35 +1219,80 @@ def _value_schema_mismatch_paths(value: Any, schema: Any, *, path: str = "$") ->
     return list(dict.fromkeys(mismatches))
 
 
-def _parameter_schema_tokens(schema: Any) -> set[str]:
+def _parameter_schema_tokens(schema: Any, *, include_constraints: bool = False) -> set[str]:
     if not isinstance(schema, dict):
         return set()
     kind = _parameter_schema_kind(schema)
     tokens: set[str] = set()
     if kind:
         tokens.add(kind)
+    if include_constraints:
+        for value in schema.get("allowed_values") if isinstance(schema.get("allowed_values"), list) else []:
+            tokens.add(str(value).strip().lower())
+        for field in ("min", "max", "min_length", "max_length"):
+            if field in schema:
+                tokens.add(str(schema.get(field)).strip().lower())
     if kind in {"list", "array"}:
         tokens.add("list")
-        tokens.update(_parameter_schema_tokens(schema.get("element") or schema.get("items")))
+        tokens.update(_parameter_schema_tokens(schema.get("element") or schema.get("items"), include_constraints=include_constraints))
     elif kind == "tuple":
         tokens.add("tuple")
         for item in schema.get("items") or []:
-            tokens.update(_parameter_schema_tokens(item))
+            tokens.update(_parameter_schema_tokens(item, include_constraints=include_constraints))
     elif kind in {"dict", "object"}:
         tokens.add("dict")
         fields = schema.get("fields")
         if isinstance(fields, dict):
             for field_name, field_schema in fields.items():
                 tokens.add(str(field_name).strip().lower())
-                tokens.update(_parameter_schema_tokens(field_schema))
+                tokens.update(_parameter_schema_tokens(field_schema, include_constraints=include_constraints))
         else:
-            tokens.update(_parameter_schema_tokens(schema.get("key") or schema.get("keys")))
-            tokens.update(_parameter_schema_tokens(schema.get("value") or schema.get("values")))
+            tokens.update(_parameter_schema_tokens(schema.get("key") or schema.get("keys"), include_constraints=include_constraints))
+            tokens.update(_parameter_schema_tokens(schema.get("value") or schema.get("values"), include_constraints=include_constraints))
     elif kind == "union":
         tokens.add("union")
         for option in _schema_options(schema):
-            tokens.update(_parameter_schema_tokens({"kind": option} if isinstance(option, str) else option))
+            tokens.update(_parameter_schema_tokens({"kind": option} if isinstance(option, str) else option, include_constraints=include_constraints))
     return {token for token in tokens if token and token not in {"union", "json"}}
+
+
+OUTPUT_FIELD_CONSTRAINT_HINTS = ("code", "status", "state", "label", "type", "category", "class", "rank", "score", "level", "count", "index", "id")
+
+
+def _schema_has_range_or_enum(schema: Any) -> bool:
+    if not isinstance(schema, dict):
+        return False
+    return any(field in schema for field in ("allowed_values", "min", "max", "min_length", "max_length"))
+
+
+def _output_schema_range_requirement_issues(schema: Any, *, path: str = "$") -> list[str]:
+    if not isinstance(schema, dict):
+        return []
+    issues: list[str] = []
+    kind = _parameter_schema_kind(schema)
+    if path != "$" and not path.endswith("[]") and not path.endswith(".<value>"):
+        field_name = path.rsplit(".", 1)[-1].lower()
+        if not str(schema.get("description") or "").strip():
+            issues.append(f"question.code.output_schema.description_missing:{path}")
+        if any(hint in field_name for hint in OUTPUT_FIELD_CONSTRAINT_HINTS) and not _schema_has_range_or_enum(schema):
+            issues.append(f"question.code.output_schema.range_missing:{path}")
+    if kind in {"list", "array"}:
+        issues.extend(_output_schema_range_requirement_issues(schema.get("element") or schema.get("items"), path=f"{path}[]"))
+    elif kind == "tuple":
+        for index, item in enumerate(schema.get("items") or []):
+            issues.extend(_output_schema_range_requirement_issues(item, path=f"{path}[{index}]"))
+    elif kind in {"dict", "object"}:
+        fields = schema.get("fields")
+        if isinstance(fields, dict):
+            for field_name, field_schema in fields.items():
+                issues.extend(_output_schema_range_requirement_issues(field_schema, path=f"{path}.{field_name}"))
+        else:
+            issues.extend(_output_schema_range_requirement_issues(schema.get("value") or schema.get("values"), path=f"{path}.<value>"))
+    elif kind == "union":
+        for index, option in enumerate(_schema_options(schema)):
+            option_schema = {"kind": option} if isinstance(option, str) else option
+            issues.extend(_output_schema_range_requirement_issues(option_schema, path=f"{path}.any_of.{index}"))
+    return issues
 
 
 def _input_spec_contains_schema_token(input_spec: str, token: str) -> bool:
@@ -1199,6 +1340,39 @@ def _case_parameter_values(item: dict[str, Any], case: Any, parameter_names: lis
     return {}
 
 
+def _example_output_value(example: Any) -> tuple[bool, Any]:
+    if isinstance(example, dict) and "output" in example:
+        return True, example.get("output")
+    return False, None
+
+
+def _case_expected_literal(case: Any) -> tuple[bool, Any]:
+    if not isinstance(case, dict):
+        return False, None
+    for key in ("expected", "expected_output", "expected_rows", "expected_records"):
+        if key in case:
+            return True, case.get(key)
+    return False, None
+
+
+def _validate_output_values_against_schema(item: dict[str, Any], output_schema: dict[str, Any]) -> list[str]:
+    issues: list[str] = []
+    for field, extractor in (
+        ("examples", _example_output_value),
+        ("public_tests", _case_expected_literal),
+        ("hidden_tests", _case_expected_literal),
+    ):
+        values = item.get(field) if isinstance(item.get(field), list) else []
+        for entry in values:
+            present, value = extractor(entry)
+            if not present:
+                continue
+            mismatches = _value_schema_mismatch_paths(value, output_schema)
+            for path in mismatches[:3]:
+                issues.append(f"question.code.{field}.output_type_mismatch:{path}")
+    return issues
+
+
 def validate_code_question_parameter_spec_contract(item: dict[str, Any], question_spec: dict[str, Any] | None) -> list[str]:
     qid = str(item.get("id") or "<missing-id>").strip()
     if not isinstance(question_spec, dict):
@@ -1242,6 +1416,16 @@ def validate_code_question_parameter_spec_contract(item: dict[str, Any], questio
                 mismatches = _value_schema_mismatch_paths(extracted[name], schema)
                 for path in mismatches[:3]:
                     issues.append(f"question.code.{field}.type_mismatch:{name}:{path}")
+    output_schema = question_spec.get("output_schema")
+    if not isinstance(output_schema, dict):
+        issues.append(f"question.code.output_schema_missing:{qid}")
+        return issues
+    issues.extend(_output_schema_range_requirement_issues(output_schema))
+    output_spec = str(item.get("output_spec") or "")
+    for token in sorted(_parameter_schema_tokens(output_schema, include_constraints=True)):
+        if not _input_spec_contains_schema_token(output_spec, token):
+            issues.append(f"question.code.output_spec.schema_coverage_missing:{token}")
+    issues.extend(_validate_output_values_against_schema(item, output_schema))
     return issues
 
 
@@ -1279,6 +1463,9 @@ def validate_parameter_spec_basic(data: dict[str, Any]) -> list[str]:
         variants = question.get("runtime_variants")
         if variants is not None and not isinstance(variants, list):
             issues.append(f"parameter_spec.questions.{q_index}.runtime_variants_not_list")
+        output_schema = question.get("output_schema")
+        if output_schema is not None:
+            issues.extend(validate_parameter_schema_node(output_schema, context=f"parameter_spec.questions.{q_index}.output_schema"))
         parameters = question.get("parameters") if isinstance(question.get("parameters"), list) else question.get("params")
         if not isinstance(parameters, list):
             issues.append(f"parameter_spec.questions.{q_index}.parameters_not_list")

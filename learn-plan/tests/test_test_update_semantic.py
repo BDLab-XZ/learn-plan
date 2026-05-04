@@ -74,6 +74,44 @@ class TestUpdateSemanticTest(unittest.TestCase):
         self.assertEqual(summary.get("semantic_missing_requirements"), ["semantic_review"])
         self.assertEqual([item["title"] for item in summary.get("wrong_items", [])], ["条件判断"])
 
+    def test_diagnostic_triggers_are_aggregated_into_summary_targets(self) -> None:
+        progress = self._progress()
+        progress["questions"]["q2"]["stats"]["last_submit_result"] = {
+            "question_id": "q2",
+            "question_type": "single_choice",
+            "is_correct": False,
+            "selected": [1],
+            "unsure": [0],
+            "diagnostic_triggers": [
+                {
+                    "trigger_type": "wrong_answer",
+                    "question_id": "q2",
+                    "question_type": "single_choice",
+                    "option_index": 1,
+                    "selected": True,
+                    "is_correct_option": False,
+                    "knowledge_point_ids": ["kp-condition"],
+                    "misconception_ids": ["mc-condition-branch"],
+                    "capability_tags": ["条件"],
+                    "evidence": ["user selected option 1"],
+                    "severity": "medium",
+                    "requires_follow_up": True,
+                    "diagnostic_mapping_status": "mapped",
+                }
+            ],
+            "submitted_at": "2026-04-24T08:30:00Z",
+        }
+
+        summary = learn_test_update.summarize_test_progress(progress, self._questions_data())
+
+        self.assertEqual(len(summary["diagnostic_triggers"]), 1)
+        self.assertEqual(summary["diagnostic_targets"][0]["knowledge_point_id"], "kp-condition")
+        self.assertEqual(summary["diagnostic_targets"][0]["misconception_ids"], ["mc-condition-branch"])
+        self.assertEqual(summary["review_debt_candidates"], [])
+        self.assertEqual(summary["result_summary"]["raw_score"], {"correct": 1, "attempted": 2, "total": 2, "ratio": 0.5})
+        self.assertEqual(summary["result_summary"]["learning_score"]["level"], "medium_low")
+        self.assertEqual(summary["result_summary"]["review_recommendation"]["recommended_action"], "review_first")
+
     def test_valid_semantic_review_populates_semantic_fields(self) -> None:
         summary = learn_test_update.summarize_test_progress(self._progress(), self._questions_data(), semantic_review=self._semantic_review())
 

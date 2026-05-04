@@ -162,6 +162,63 @@ export interface RunCaseResult {
   error?: string
 }
 
+export type DiagnosticTriggerType = 'wrong_answer' | 'uncertain' | 'code_failure' | 'sql_failure'
+export type DiagnosticSeverity = 'low' | 'medium' | 'high'
+
+export interface DiagnosticTrigger {
+  trigger_type: DiagnosticTriggerType | string
+  question_id?: string | null
+  question_type?: QuestionType | string
+  option_index?: number
+  selected?: boolean
+  is_correct_option?: boolean
+  knowledge_point_ids?: string[]
+  prerequisite_ids?: string[]
+  misconception_ids?: string[]
+  capability_tags?: string[]
+  evidence?: string[]
+  severity?: DiagnosticSeverity | string
+  requires_follow_up?: boolean
+  diagnostic_mapping_status?: string
+  diagnostic_role?: string
+  mapping_confidence?: number
+  failure_types?: string[]
+  failed_case_count?: number
+}
+
+export interface RawScore {
+  correct: number
+  attempted: number
+  total: number
+  ratio: number
+}
+
+export interface LearningScore {
+  level: 'unknown' | 'low' | 'medium_low' | 'medium' | 'high' | string
+  ratio?: number
+  uncertain_count?: number
+  wrong_count?: number
+  diagnostic_target_count?: number
+  rationale?: string
+}
+
+export interface ReviewRecommendation {
+  recommended_action: 'review_first' | 'mixed_review_then_new' | 'proceed' | string
+  requires_user_confirmation?: boolean
+  targets?: string[]
+  message?: string
+}
+
+export interface ResultSummary {
+  total?: number
+  attempted?: number
+  correct?: number
+  raw_score?: RawScore
+  learning_score?: LearningScore
+  review_recommendation?: ReviewRecommendation
+  [key: string]: unknown
+}
+
 export interface SubmitResult {
   ok?: boolean
   all_passed?: boolean
@@ -176,6 +233,14 @@ export interface SubmitResult {
   failed_case_summaries?: FailedCaseSummary[]
   run_cases?: RunCaseResult[]
   failure_types?: string[]
+  question_id?: string
+  question_type?: QuestionType | string
+  selected?: number[]
+  unsure?: number[]
+  diagnostic_triggers?: DiagnosticTrigger[]
+  raw_score?: RawScore
+  learning_score?: LearningScore
+  review_recommendation?: ReviewRecommendation
   submitted_at?: string
   error?: string
 }
@@ -207,6 +272,7 @@ export interface RuntimeProgress {
     attempted?: number
     correct?: number
   }
+  result_summary?: ResultSummary
   session?: Record<string, unknown>
   questions?: Record<string, QuestionProgress>
   difficulty_summary?: DifficultySummary
@@ -290,5 +356,10 @@ export interface SubmitRecord {
   runCases?: RunCaseRecord[]
   terminalOutput?: string
   failure_types?: string[]
+  selected?: number[]
   unsure?: number[]
+  diagnostic_triggers?: DiagnosticTrigger[]
+  raw_score?: RawScore
+  learning_score?: LearningScore
+  review_recommendation?: ReviewRecommendation
 }

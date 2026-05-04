@@ -62,6 +62,7 @@ const lineNumbers = computed(() => {
   return Array.from({ length: count }, (_, index) => index + 1)
 })
 const selectedOptions = computed(() => props.question.answerDraft.split('\n').filter(Boolean))
+const canRunQuestion = computed(() => props.question.type === 'code' || props.question.type === 'sql')
 
 function optionSelected(option: string) {
   return selectedOptions.value.includes(option)
@@ -341,7 +342,7 @@ onBeforeUnmount(disposeMonaco)
     </div>
 
     <div class="workspace-actions">
-      <button class="secondary-button" type="button" @click="emit('run')">运行</button>
+      <button v-if="canRunQuestion" class="secondary-button" type="button" @click="emit('run')">运行</button>
       <button class="primary-button" type="button" @click="emit('submit')">
         {{ props.unsureIndices.length ? '提交（含不确定项）' : '提交' }}
       </button>

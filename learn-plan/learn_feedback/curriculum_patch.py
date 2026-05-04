@@ -16,6 +16,17 @@ PENDING_PATCH_STATUSES = {"proposed", "pending", "pending-evidence"}
 APPROVED_PATCH_STATUSES = {"approved"}
 CONSUMABLE_PATCH_STATUSES = PENDING_PATCH_STATUSES | APPROVED_PATCH_STATUSES
 TERMINAL_PATCH_STATUSES = {"rejected", "applied"}
+LOW_RISK_PATCH_TYPES = {"option_mapping_patch", "alias_patch", "tag_patch", "question_quality_issue"}
+CONFIRMATION_REQUIRED_PATCH_TYPES = {"knowledge_node_patch", "prerequisite_edge_patch", "stage_order_patch", "target_scope_patch"}
+
+
+def patch_risk_policy(patch_type: Any) -> dict[str, str]:
+    normalized = str(patch_type or "").strip()
+    if normalized in LOW_RISK_PATCH_TYPES:
+        return {"risk_level": "low", "application_policy": "semi-automatic"}
+    if normalized in CONFIRMATION_REQUIRED_PATCH_TYPES:
+        return {"risk_level": "high", "application_policy": "pending-user-approval"}
+    return {"risk_level": "medium", "application_policy": "pending-user-approval"}
 
 
 def patch_status(value: Any) -> str:
@@ -272,8 +283,9 @@ def validate_patch_proposal(patch: dict[str, Any]) -> list[str]:
         issues.append("patch.traceability_missing")
     if not patch.get("evidence") and patch_status(patch.get("status")) != "pending-evidence":
         issues.append("patch.evidence_missing")
-    if patch.get("application_policy") != "pending-user-approval":
-        issues.append("patch.must_wait_for_user_approval")
+    policy = patch_risk_policy(patch.get("patch_type"))
+    if patch.get("application_policy") != policy["application_policy"]:
+        issues.append("patch.application_policy_mismatch")
     confidence = patch.get("confidence")
     try:
         confidence_value = float(confidence)
@@ -307,10 +319,12 @@ def build_patch_proposal(summary: dict[str, Any], session_facts: dict[str, Any],
         patch_type = "review-adjustment"
         rationale = "本次 session 暴露薄弱点，建议先补强再推进。"
 
+    policy = patch_risk_policy(patch_type)
     patch = {
         "id": f"{date}:{update_type}:{topic}",
         "status": status,
         "patch_type": patch_type,
+        "risk_level": policy["risk_level"],
         "topic": topic,
         "created_at": date,
         "source_update_type": update_type,
@@ -326,7 +340,7 @@ def build_patch_proposal(summary: dict[str, Any], session_facts: dict[str, Any],
             "can_advance": bool(summary.get("can_advance")),
             "should_review": bool(summary.get("should_review")),
         },
-        "application_policy": "pending-user-approval",
+        "application_policy": policy["application_policy"],
     }
     traceability = list(session_facts.get("traceability") or [])
     traceability.append(
@@ -427,6 +441,9 @@ def update_patch_queue_file(
         write_patch_queue(path, queue)
         return {"path": str(path), "patch": None, "queue": queue}
     patch = deepcopy(patch_candidate)
+    policy = patch_risk_policy(patch.get("patch_type"))
+    patch.setdefault("risk_level", policy["risk_level"])
+    patch.setdefault("application_policy", policy["application_policy"])
     quality_issues = validate_patch_proposal(patch)
     if quality_issues:
         patch = apply_quality_envelope(
@@ -467,6 +484,7 @@ __all__ = [
     "load_patch_queue",
     "merge_patch",
     "patch_queue_path_for_plan",
+    "patch_risk_policy",
     "should_propose_patch",
     "update_patch_queue_file",
     "write_patch_queue",

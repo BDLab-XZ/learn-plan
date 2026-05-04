@@ -39,6 +39,35 @@ const resultLabel = computed(() => {
   return '未通过'
 })
 
+const learningLevelLabel = computed(() => {
+  const level = latestRecord.value?.learning_score?.level
+  if (level === 'high') return '稳定'
+  if (level === 'medium') return '有不确定项'
+  if (level === 'medium_low') return '需巩固'
+  if (level === 'low') return '建议先复习'
+  return '待观察'
+})
+
+const recommendationLabel = computed(() => {
+  const action = latestRecord.value?.review_recommendation?.recommended_action
+  if (action === 'review_first') return '先复习'
+  if (action === 'mixed_review_then_new') return '复习后继续'
+  if (action === 'proceed') return '继续推进'
+  return '待判断'
+})
+
+const rawScoreText = computed(() => {
+  const rawScore = latestRecord.value?.raw_score
+  if (!rawScore) return ''
+  return `${rawScore.correct}/${rawScore.attempted || rawScore.total}`
+})
+
+const rawScorePercentText = computed(() => {
+  const ratio = latestRecord.value?.raw_score?.ratio
+  if (ratio === undefined) return ''
+  return `${Math.round(ratio * 100)}%`
+})
+
 const caseSummary = computed(() => {
   if (!activeCases.value.length) return ''
   if (latestRecord.value?.action === 'run') return `展示 ${activeCases.value.length} 个运行样例`
@@ -73,6 +102,25 @@ function selectCase(index: number) {
           </span>
         </div>
         <span class="result-meta">{{ latestRecord.action === 'run' ? '运行' : '提交' }} · {{ latestRecord.createdAt }}</span>
+      </div>
+
+      <!-- Score summary -->
+      <div v-if="latestRecord.action === 'submit' && latestRecord.raw_score" class="score-summary">
+        <div class="score-card">
+          <span class="score-label">客观分</span>
+          <strong class="score-value">{{ rawScoreText }}</strong>
+          <span v-if="rawScorePercentText" class="score-note">{{ rawScorePercentText }}</span>
+        </div>
+        <div class="score-card learning-score-card" :class="latestRecord.learning_score?.level">
+          <span class="score-label">学习稳定度</span>
+          <strong class="score-value">{{ learningLevelLabel }}</strong>
+          <span v-if="latestRecord.learning_score?.rationale" class="score-note">{{ latestRecord.learning_score.rationale }}</span>
+        </div>
+        <div v-if="latestRecord.review_recommendation" class="score-card review-recommendation-card">
+          <span class="score-label">建议</span>
+          <strong class="score-value">{{ recommendationLabel }}</strong>
+          <span v-if="latestRecord.review_recommendation.message" class="score-note">{{ latestRecord.review_recommendation.message }}</span>
+        </div>
       </div>
 
       <!-- Error summary -->

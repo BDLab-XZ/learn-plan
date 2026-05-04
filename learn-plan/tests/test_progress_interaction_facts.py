@@ -41,6 +41,17 @@ class ProgressInteractionFactsTest(unittest.TestCase):
                         "trigger": {"type": "user_completion_signal"},
                         "rounds": [{"round_index": 1, "question_type": "transfer_application", "result": "solid_after_intervention", "prompting_level": "hinted"}],
                         "mastery_judgement": {"status": "solid_after_intervention", "mastery_level": "explanation", "prompting_level": "hinted"},
+                        "diagnoses": [
+                            {
+                                "knowledge_point_id": "kp-closure-capture",
+                                "diagnosis": "misconception",
+                                "severity": "high",
+                                "confidence": 0.86,
+                                "question_quality_guard": "passed",
+                                "rationale": "用户需要提示后才能解释闭包变量仍被引用。",
+                                "recommended_review": ["闭包变量捕获"],
+                            }
+                        ],
                         "learning_path_evidence": ["agent_intervention_needed"],
                     },
                     ensure_ascii=False,
@@ -91,6 +102,8 @@ class ProgressInteractionFactsTest(unittest.TestCase):
             self.assertEqual(facts["completion_signal_facts"]["status"], "received")
             self.assertEqual(facts["interaction_event_facts"][0]["summary"], "用户追问闭包变量为什么还存在")
             self.assertEqual(facts["reflection_facts"]["mastery_judgement"]["status"], "solid_after_intervention")
+            self.assertEqual(facts["reflection_facts"]["diagnoses"][0]["knowledge_point_id"], "kp-closure-capture")
+            self.assertEqual(facts["reflection_facts"]["diagnoses"][0]["recommended_review"], ["闭包变量捕获"])
             self.assertEqual(facts["user_feedback_facts"]["difficulty"], "偏难")
             self.assertEqual(facts["mastery_judgement_facts"]["prompting_level"], "hinted")
             evidence_text = "\n".join(facts.get("evidence", []))

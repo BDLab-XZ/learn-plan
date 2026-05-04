@@ -137,7 +137,7 @@ def build_display_safe_questions_payload(data):
         for key in (
             "answer", "answers", "explanation", "reference_points", "grading_hint", "solution_code", "solution_sql",
             "reference_sql", "hidden_tests", "hidden_dataset_refs", "dataset_refs", "dataset_ref", "parameter_spec_ref",
-            "difficulty_reason", "expected_failure_mode", "runtime_context",
+            "difficulty_reason", "expected_failure_mode", "runtime_context", "option_diagnostics",
         ):
             safe_item.pop(key, None)
         if dataset_description:
@@ -566,6 +566,216 @@ def normalize_question_type(value):
     return {"single": "single_choice", "multi": "multiple_choice", "judge": "true_false"}.get(qtype, qtype)
 
 
+def objective_correct_indices(question):
+    qtype = normalize_question_type(question.get("type"))
+    if qtype == "true_false":
+        answer = question.get("answer")
+        if isinstance(answer, bool):
+            return {0 if answer else 1}
+        return {0 if answer == 0 or str(answer).strip().lower() == "true" else 1}
+    raw_answer = question.get("answers", question.get("answer"))
+    if isinstance(raw_answer, list):
+        result = set()
+        for item in raw_answer:
+            try:
+                result.add(int(item))
+            except (TypeError, ValueError):
+                continue
+        return result
+    try:
+        return {int(raw_answer)}
+    except (TypeError, ValueError):
+        return set()
+
+
+def _diagnostic_ids(value):
+    result = []
+    if not isinstance(value, list):
+        return result
+    for item in value:
+        if isinstance(item, dict):
+            ref_id = str(item.get("id") or item.get("knowledge_point_id") or item.get("misconception_id") or "").strip()
+        else:
+            ref_id = str(item or "").strip()
+        if ref_id and ref_id not in result:
+            result.append(ref_id)
+    return result
+
+
+def _diagnostic_by_index(question):
+    diagnostics = question.get("option_diagnostics") if isinstance(question.get("option_diagnostics"), list) else []
+    result = {}
+    for item in diagnostics:
+        if not isinstance(item, dict):
+            continue
+        try:
+            index = int(item.get("index"))
+        except (TypeError, ValueError):
+            continue
+        result[index] = item
+    return result
+
+
+def _trigger_from_option(question, *, trigger_type, option_index, selected, is_correct_option, evidence):
+    diagnostic = _diagnostic_by_index(question).get(option_index, {})
+    trigger = {
+        "trigger_type": trigger_type,
+        "question_id": question.get("id"),
+        "question_type": normalize_question_type(question.get("type")),
+        "option_index": option_index,
+        "selected": bool(selected),
+        "is_correct_option": bool(is_correct_option),
+        "knowledge_point_ids": _diagnostic_ids(diagnostic.get("knowledge_point_ids")),
+        "prerequisite_ids": _diagnostic_ids(diagnostic.get("prerequisite_ids")),
+        "misconception_ids": _diagnostic_ids(diagnostic.get("misconception_ids")),
+        "capability_tags": question.get("capability_tags") or question.get("tags") or [],
+        "evidence": evidence,
+        "severity": "medium" if trigger_type == "wrong_answer" else "low",
+        "requires_follow_up": True,
+        "diagnostic_mapping_status": "mapped" if diagnostic else "missing",
+    }
+    if diagnostic.get("diagnostic_role"):
+        trigger["diagnostic_role"] = diagnostic.get("diagnostic_role")
+    if diagnostic.get("confidence") is not None:
+        trigger["mapping_confidence"] = diagnostic.get("confidence")
+    return trigger
+
+
+def build_objective_diagnostic_triggers(question, selected, unsure):
+    qtype = normalize_question_type(question.get("type"))
+    if qtype not in {"single_choice", "multiple_choice", "true_false"}:
+        return []
+    options = question.get("options") if isinstance(question.get("options"), list) else []
+    selected_set = {index for index in normalize_selected_indices(selected) if 0 <= index < len(options)}
+    unsure_set = {index for index in normalize_selected_indices(unsure) if 0 <= index < len(options)}
+    correct_set = {index for index in objective_correct_indices(question) if 0 <= index < len(options)}
+    triggers = []
+    for index in sorted(selected_set - correct_set):
+        triggers.append(_trigger_from_option(question, trigger_type="wrong_answer", option_index=index, selected=True, is_correct_option=False, evidence=[f"user selected option {index}"]))
+    for index in sorted(correct_set - selected_set):
+        triggers.append(_trigger_from_option(question, trigger_type="wrong_answer", option_index=index, selected=False, is_correct_option=True, evidence=[f"user missed correct option {index}"]))
+    for index in sorted(unsure_set):
+        triggers.append(_trigger_from_option(question, trigger_type="uncertain", option_index=index, selected=index in selected_set, is_correct_option=index in correct_set, evidence=[f"user marked option {index} uncertain"]))
+    return triggers
+
+
+def build_failure_diagnostic_triggers(question, result, trigger_type):
+    if result.get("all_passed") is True:
+        return []
+    failures = result.get("failed_case_summaries") if isinstance(result.get("failed_case_summaries"), list) else []
+    failure_types = result.get("failure_types") if isinstance(result.get("failure_types"), list) else []
+    failed_hidden = any(isinstance(case, dict) and case.get("category") == "hidden" for case in failures)
+    if not failed_hidden:
+        total_hidden = int(result.get("total_hidden_count") or 0)
+        passed_hidden = int(result.get("passed_hidden_count") or 0)
+        failed_hidden = total_hidden > passed_hidden
+    trigger = {
+        "trigger_type": trigger_type,
+        "question_id": question.get("id") if isinstance(question, dict) else None,
+        "question_type": normalize_question_type(question.get("type")) if isinstance(question, dict) else trigger_type.replace("_failure", ""),
+        "knowledge_point_ids": question.get("knowledge_point_ids") if isinstance(question, dict) and isinstance(question.get("knowledge_point_ids"), list) else [],
+        "prerequisite_ids": [],
+        "misconception_ids": [],
+        "capability_tags": question.get("capability_tags") if isinstance(question, dict) and isinstance(question.get("capability_tags"), list) else [],
+        "failure_types": failure_types,
+        "failed_case_count": len(failures),
+        "evidence": [f"failed case {case.get('case') or index + 1}: {case.get('error') or 'wrong_answer'}" for index, case in enumerate(failures) if isinstance(case, dict)],
+        "severity": "high" if failed_hidden else "medium",
+        "requires_follow_up": True,
+        "diagnostic_mapping_status": "case_summary",
+    }
+    return [trigger]
+
+
+def build_raw_score(total, attempted, correct):
+    total_count = max(0, int(total or 0))
+    attempted_count = max(0, int(attempted or 0))
+    correct_count = max(0, int(correct or 0))
+    denominator = attempted_count if attempted_count > 0 else total_count
+    ratio = round(correct_count / denominator, 4) if denominator > 0 else 0.0
+    return {"correct": correct_count, "attempted": attempted_count, "total": total_count, "ratio": ratio}
+
+
+def build_learning_score(raw_score, diagnostic_triggers):
+    triggers = diagnostic_triggers if isinstance(diagnostic_triggers, list) else []
+    wrong_types = {"wrong_answer", "code_failure", "sql_failure"}
+    wrong_count = sum(1 for item in triggers if isinstance(item, dict) and item.get("trigger_type") in wrong_types)
+    uncertain_count = sum(1 for item in triggers if isinstance(item, dict) and item.get("trigger_type") == "uncertain")
+    high_severity_count = sum(1 for item in triggers if isinstance(item, dict) and item.get("severity") == "high")
+    target_ids = []
+    for trigger in triggers:
+        if not isinstance(trigger, dict):
+            continue
+        for knowledge_id in trigger.get("knowledge_point_ids") or []:
+            if knowledge_id and knowledge_id not in target_ids:
+                target_ids.append(knowledge_id)
+    ratio = float(raw_score.get("ratio") or 0.0)
+    attempted = int(raw_score.get("attempted") or 0)
+    if attempted <= 0:
+        level = "unknown"
+        rationale = "尚无提交记录，学习稳定度待观察。"
+    elif high_severity_count > 0 or wrong_count >= 2 or (attempted >= 3 and ratio < 0.5):
+        level = "low"
+        rationale = "存在高风险错误或客观正确率偏低，需要优先复习并追问确认。"
+    elif wrong_count > 0 or ratio < 0.8:
+        level = "medium_low"
+        rationale = "已有错题或诊断目标，建议先针对相关知识点巩固。"
+    elif uncertain_count > 0 or target_ids:
+        level = "medium"
+        rationale = "客观结果尚可，但存在不确定项，需要补充确认。"
+    else:
+        level = "high"
+        rationale = "客观正确率稳定，暂无额外诊断风险。"
+    return {
+        "level": level,
+        "ratio": ratio,
+        "uncertain_count": uncertain_count,
+        "wrong_count": wrong_count,
+        "diagnostic_target_count": len(target_ids),
+        "rationale": rationale,
+    }
+
+
+def build_review_recommendation(learning_score, diagnostic_triggers):
+    targets = []
+    for trigger in diagnostic_triggers if isinstance(diagnostic_triggers, list) else []:
+        if not isinstance(trigger, dict):
+            continue
+        for knowledge_id in trigger.get("knowledge_point_ids") or []:
+            if knowledge_id and knowledge_id not in targets:
+                targets.append(knowledge_id)
+    level = learning_score.get("level")
+    if level == "low":
+        action = "review_first"
+        message = "建议先复习诊断目标，再推进新内容。"
+    elif level in {"medium", "medium_low"}:
+        action = "mixed_review_then_new"
+        message = "建议先用少量针对性复习确认薄弱点，再继续学习。"
+    else:
+        action = "proceed"
+        message = "可以继续推进新内容，并保留常规回顾。"
+    return {"recommended_action": action, "requires_user_confirmation": action != "proceed", "targets": targets[:4], "message": message}
+
+
+def attach_result_summary(result):
+    total = int(result.get("total_count") or (int(result.get("total_public_count") or 0) + int(result.get("total_hidden_count") or 0)) or 1)
+    if result.get("passed_count") is not None:
+        correct = int(result.get("passed_count") or 0)
+    elif result.get("is_correct") is not None:
+        correct = 1 if result.get("is_correct") else 0
+    elif result.get("all_passed") is not None:
+        correct = total if result.get("all_passed") else 0
+    else:
+        correct = 1 if result.get("ok") and not result.get("error") else 0
+    raw_score = build_raw_score(total, total, correct)
+    diagnostic_triggers = result.get("diagnostic_triggers") if isinstance(result.get("diagnostic_triggers"), list) else []
+    learning_score = build_learning_score(raw_score, diagnostic_triggers)
+    result["raw_score"] = raw_score
+    result["learning_score"] = learning_score
+    result["review_recommendation"] = build_review_recommendation(learning_score, diagnostic_triggers)
+    return result
+
+
 def grade_concept_answer(question, selected):
     qtype = normalize_question_type(question.get("type"))
     if qtype == "true_false":
@@ -764,13 +974,19 @@ class Handler(BaseHTTPRequestHandler):
                     if not question:
                         raise ValueError("question not found")
                     selected = normalize_selected_indices(payload.get("selected"))
-                    unsure = payload.get("unsure") or []
-                    result = {
-                        "ok": True,
-                        "is_correct": grade_concept_answer(question, selected),
-                        "unsure": unsure,
-                        "submitted_at": payload.get("submitted_at") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                    }
+                    unsure = normalize_selected_indices(payload.get("unsure"))
+                    result = attach_result_summary(
+                        {
+                            "ok": True,
+                            "is_correct": grade_concept_answer(question, selected),
+                            "question_id": question.get("id"),
+                            "question_type": normalize_question_type(question.get("type")),
+                            "selected": selected,
+                            "unsure": unsure,
+                            "diagnostic_triggers": build_objective_diagnostic_triggers(question, selected, unsure),
+                            "submitted_at": payload.get("submitted_at") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                        }
+                    )
                 elif mode == "skip":
                     result = {"ok": True, "skipped": True}
                 else:
@@ -802,7 +1018,9 @@ class Handler(BaseHTTPRequestHandler):
         from learn_runtime.mysql_runtime import submit_sql
 
         sql = payload.get("sql") or payload.get("code") or ""
-        return submit_sql(question, sql, load_runtime_context())
+        result = submit_sql(question, sql, load_runtime_context())
+        result["diagnostic_triggers"] = build_failure_diagnostic_triggers(question, result, "sql_failure")
+        return attach_result_summary(result)
 
     def _run_python_script(self, code, stdin_data="", timeout=10):
         try:
@@ -1029,7 +1247,7 @@ class Handler(BaseHTTPRequestHandler):
                 failure_types.append(error)
             if len(failed_case_summaries) < MAX_FAILED_CASE_SUMMARIES:
                 failed_case_summaries.append(summary)
-        return {
+        result = {
             "all_passed": passed_count == len(test_cases),
             "passed_count": passed_count,
             "total_count": len(test_cases),
@@ -1042,6 +1260,8 @@ class Handler(BaseHTTPRequestHandler):
             "failure_types": failure_types,
             "results": failed_case_summaries,
         }
+        result["diagnostic_triggers"] = build_failure_diagnostic_triggers(question, result, "code_failure")
+        return attach_result_summary(result)
 
     def _run_function_case(self, code, function_name, case, timeout):
         payload = {

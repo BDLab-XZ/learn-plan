@@ -14,6 +14,31 @@ from learn_runtime.question_validation import validate_questions_payload
 from learn_runtime.schemas import infer_min_difficulty_from_dimensions, validate_question_difficulty_fields
 
 
+def option_diagnostics() -> list[dict[str, object]]:
+    return [
+        {
+            "index": 0,
+            "claim": "`=` 是 Python 的赋值符号。",
+            "diagnostic_role": "correct_concept",
+            "knowledge_point_ids": [{"id": "kp-python-assignment", "relevance": "primary", "confidence": 0.9}],
+            "prerequisite_ids": [],
+            "misconception_ids": [],
+            "evidence_span": "选项 `=` 对应变量赋值语法。",
+            "diagnostic_question": "你如何区分赋值和相等比较？",
+        },
+        {
+            "index": 1,
+            "claim": "`==` 是 Python 的相等比较符号。",
+            "diagnostic_role": "distractor",
+            "knowledge_point_ids": [{"id": "kp-python-assignment", "relevance": "primary", "confidence": 0.9}],
+            "prerequisite_ids": [],
+            "misconception_ids": [{"id": "mc-assignment-vs-equality", "confidence": 0.8}],
+            "evidence_span": "选项 `==` 暴露赋值与比较混淆。",
+            "diagnostic_question": "什么时候应该使用 `==` 而不是 `=`？",
+        },
+    ]
+
+
 def base_question(level: str = "basic") -> dict[str, object]:
     labels = {"basic": "基础题", "medium": "中等题", "upper_medium": "中难题", "hard": "难题"}
     scores = {"basic": 1, "medium": 2, "upper_medium": 3, "hard": 4}
@@ -25,6 +50,7 @@ def base_question(level: str = "basic") -> dict[str, object]:
         "prompt": "**问题**：Python 中哪个符号用于赋值？\n\n请选择最合适的一项。",
         "options": ["=", "=="],
         "answer": 0,
+        "option_diagnostics": option_diagnostics(),
         "explanation": "= 用于赋值。",
         "scoring_rubric": [{"metric": "概念理解", "threshold": "识别赋值符号"}],
         "capability_tags": ["python-assignment"],

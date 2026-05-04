@@ -12,7 +12,8 @@ KNOWLEDGE_STATE_FILENAME = "knowledge-state.json"
 KNOWLEDGE_MAP_FILENAME = "knowledge-map.md"
 CONTRACT_VERSION = "learn-plan.knowledge-state.v1"
 SCHEMA_VERSION = "1.0"
-MAX_MASTERY_DELTA = 20
+DEFAULT_CONSERVATIVE_MASTERY_DELTA = 20
+MAX_MASTERY_DELTA = DEFAULT_CONSERVATIVE_MASTERY_DELTA
 DEFAULT_EVIDENCE_TYPES = {
     "recognition",
     "explanation",
@@ -619,6 +620,66 @@ def _clamp_delta(delta: Any, limit: int = MAX_MASTERY_DELTA) -> int:
     return max(-limit, min(limit, value))
 
 
+def _has_high_quality_diagnostic_evidence(item: dict[str, Any]) -> bool:
+    diagnostic = item.get("diagnostic_evidence") if isinstance(item.get("diagnostic_evidence"), dict) else {}
+    if not diagnostic:
+        return False
+    try:
+        confidence = float(diagnostic.get("confidence") or 0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    return (
+        str(diagnostic.get("source") or "").strip() == "reflection.diagnoses"
+        and str(diagnostic.get("severity") or "").strip() == "high"
+        and str(diagnostic.get("question_quality_guard") or "passed").strip() == "passed"
+        and normalize_int(diagnostic.get("round_count")) >= 2
+        and confidence >= 0.75
+    )
+
+
+def _evidence_mastery_delta(item: dict[str, Any]) -> int:
+    try:
+        value = int(float(item.get("mastery_delta", 0)))
+    except (TypeError, ValueError):
+        return 0
+    if _has_high_quality_diagnostic_evidence(item):
+        return max(-100, min(100, value))
+    return _clamp_delta(value, DEFAULT_CONSERVATIVE_MASTERY_DELTA)
+
+
+def build_review_before_progress_gate(nodes: list[dict[str, Any]], *, drop_threshold: int = 30) -> dict[str, Any]:
+    review_targets: list[str] = []
+    for node in nodes:
+        if not isinstance(node, dict) or node.get("level") != "knowledge_point":
+            continue
+        current = normalize_int(node.get("mastery"))
+        baselines = [normalize_int(node.get(key)) for key in ("baseline_mastery", "previous_stage_mastery", "weekly_mastery") if node.get(key) is not None]
+        if not baselines:
+            continue
+        previous = max(baselines)
+        if previous - current >= drop_threshold or str(node.get("stability") or "").strip() in {"declining", "fragile"}:
+            target = str(node.get("id") or node.get("title") or "").strip()
+            if target and target not in review_targets:
+                review_targets.append(target)
+    if review_targets:
+        return {
+            "recommended_action": "review_first",
+            "blocks_advance": False,
+            "requires_user_confirmation": True,
+            "review_targets": review_targets[:4],
+            "rationale": "近期掌握度出现明显退化，建议先复习再推进新内容。",
+            "user_decision": None,
+        }
+    return {
+        "recommended_action": "proceed",
+        "blocks_advance": False,
+        "requires_user_confirmation": False,
+        "review_targets": [],
+        "rationale": "未发现需要阻断推进的明显退化信号。",
+        "user_decision": None,
+    }
+
+
 def _question_knowledge_point_ids(question: dict[str, Any]) -> list[str]:
     source_trace = question.get("source_trace") if isinstance(question.get("source_trace"), dict) else {}
     rubric = question.get("rubric_by_knowledge_point") if isinstance(question.get("rubric_by_knowledge_point"), dict) else {}
@@ -724,7 +785,7 @@ def update_state_from_session_evidence(
         evidence_types = [e for e in normalize_string_list(item.get("evidence_types") or item.get("evidence_type")) if e in DEFAULT_EVIDENCE_TYPES]
         if not evidence_types:
             continue
-        delta = _clamp_delta(item.get("mastery_delta", 0))
+        delta = _evidence_mastery_delta(item)
         confidence = item.get("confidence_after") or item.get("confidence")
         for point_id in point_ids:
             node = mapping.get(point_id)
@@ -753,6 +814,7 @@ def update_state_from_session_evidence(
                     "mastery_delta": delta,
                     "summary": item.get("summary") or item.get("rationale") or (summary or {}).get("overall"),
                     "source": item.get("source") or f"/learn-{session_type}",
+                    **({"diagnostic_evidence": item.get("diagnostic_evidence")} if isinstance(item.get("diagnostic_evidence"), dict) else {}),
                 }
             )
             applied_count += 1

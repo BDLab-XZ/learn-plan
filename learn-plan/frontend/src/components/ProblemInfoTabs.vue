@@ -37,7 +37,9 @@ const exampleItems = computed(() => props.question.exampleDisplays || [])
       <div>
         <p class="eyebrow title-meta">
           <span :class="['difficulty-badge', props.question.difficultyLevel]">{{ props.question.difficulty }}</span>
-          <span>· {{ props.question.tags.join(' / ') }}</span>
+          <span class="title-tags" aria-label="题目标签">
+            <span v-for="tag in props.question.tags" :key="tag" class="title-tag">{{ tag }}</span>
+          </span>
         </p>
         <h2>{{ props.question.order }}. {{ props.question.title }}</h2>
       </div>

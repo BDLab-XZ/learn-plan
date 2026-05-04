@@ -10,7 +10,10 @@ from learn_core.io import read_json, read_text_if_exists, write_json, write_text
 from learn_core.markdown_sections import upsert_markdown_section
 from learn_core.text_utils import normalize_int, normalize_string_list
 from learn_feedback import (
+    aggregate_diagnostic_targets,
     append_micro_adjustments,
+    build_diagnostic_trigger_facts,
+    build_result_summary,
     build_session_facts,
     render_feedback_output_lines,
     update_learner_model_file,
@@ -364,19 +367,20 @@ def update_progress_state(progress: dict[str, Any], summary: dict[str, Any], *, 
         snapshot["lesson_path"] = context.get("lesson_path")
     context["plan_source_snapshot"] = snapshot
     updated["context"] = context
-    updated["result_summary"] = {
-        "total": summary.get("total"),
-        "attempted": attempted,
-        "correct": normalize_int(summary.get("correct")),
-        "overall": summary.get("overall"),
-        "session_theme": session_theme,
-        "reviewer_verdict": reviewer_verdict,
-        "review_gap": review_gap,
-        "project_tasks": project_tasks[:4],
-        "review_targets": review_targets[:4],
-        "can_advance": can_advance,
-        "should_review": needs_more_review,
-    }
+    result_summary = dict(summary.get("result_summary") if isinstance(summary.get("result_summary"), dict) else {})
+    result_summary.update(
+        {
+            "overall": summary.get("overall"),
+            "session_theme": session_theme,
+            "reviewer_verdict": reviewer_verdict,
+            "review_gap": review_gap,
+            "project_tasks": project_tasks[:4],
+            "review_targets": review_targets[:4],
+            "can_advance": can_advance,
+            "should_review": needs_more_review,
+        }
+    )
+    updated["result_summary"] = result_summary
 
     update_history.append(
         {
@@ -550,6 +554,20 @@ def summarize_progress(progress: dict[str, Any], questions_map: dict[str, dict[s
 
     overall = str(semantic_summary.get("overall") or "").strip() if semantic_valid else ""
     semantic_status = "ok" if semantic_valid else "missing_artifact"
+    diagnostic_triggers = build_diagnostic_trigger_facts(progress)
+    all_diagnostic_targets = aggregate_diagnostic_targets(diagnostic_triggers, max_targets=999)
+    diagnostic_targets = all_diagnostic_targets[:3]
+    review_debt_candidates = all_diagnostic_targets[3:]
+    session_result_summary = build_result_summary(
+        total=total,
+        attempted=attempted,
+        correct=correct,
+        diagnostic_triggers=diagnostic_triggers,
+        diagnostic_targets=diagnostic_targets,
+        review_targets=review_focus or high_freq_errors,
+        should_review=needs_more_review,
+        can_advance=can_advance,
+    )
 
     return {
         "topic": topic,
@@ -559,9 +577,10 @@ def summarize_progress(progress: dict[str, Any], questions_map: dict[str, dict[s
         "status": session.get("status") or "active",
         "started_at": session.get("started_at"),
         "finished_at": session.get("finished_at"),
-        "total": total,
-        "attempted": attempted,
-        "correct": correct,
+        "total": session_result_summary["total"],
+        "attempted": session_result_summary["attempted"],
+        "correct": session_result_summary["correct"],
+        "result_summary": session_result_summary,
         "pending_review_count": len(pending_review_items),
         "pending_review_items": normalize_string_list(pending_review_items),
         "overall": overall or None,
@@ -574,6 +593,9 @@ def summarize_progress(progress: dict[str, Any], questions_map: dict[str, dict[s
         "evidence_gate_reasons": normalize_string_list(gate_review_reasons),
         "wrong_items": wrong_items,
         "solved_items": solved_items[:3],
+        "diagnostic_triggers": diagnostic_triggers,
+        "diagnostic_targets": diagnostic_targets,
+        "review_debt_candidates": review_debt_candidates,
         "mastery": mastery,
         "material_alignment": material_alignment,
         "mainline_progress": goal_focus.get("mainline") or context.get("topic_cluster") or topic,

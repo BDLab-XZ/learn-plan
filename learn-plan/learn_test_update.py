@@ -21,8 +21,11 @@ from learn_knowledge import (
     update_state_from_session_evidence,
 )
 from learn_feedback import (
+    aggregate_diagnostic_targets,
     append_micro_adjustments,
+    build_diagnostic_trigger_facts,
     build_patch_proposal,
+    build_result_summary,
     build_session_facts,
     render_feedback_output_lines,
     update_learner_model_file,
@@ -206,6 +209,17 @@ def update_progress_state(progress: dict[str, Any], summary: dict[str, Any], *, 
     }
     updated["artifacts"] = mastery.get("artifacts") or []
     updated["reflection"] = mastery.get("reflection_text") or updated.get("reflection")
+    result_summary = dict(summary.get("result_summary") if isinstance(summary.get("result_summary"), dict) else {})
+    result_summary.update(
+        {
+            "overall": summary.get("overall"),
+            "covered_scope": covered_scope,
+            "weaknesses": weaknesses,
+            "can_advance": can_advance,
+            "should_review": should_review,
+        }
+    )
+    updated["result_summary"] = result_summary
 
     update_history.append(
         {
@@ -442,6 +456,20 @@ def summarize_test_progress(progress: dict[str, Any], questions_data: dict[str, 
     can_advance = bool(can_advance and not gate.get("blocks_advance"))
     review_decision = str(semantic_review.get("review_decision") or "").strip() if semantic_valid else "缺少 semantic review artifact"
     advance_decision = str(semantic_review.get("advance_decision") or "").strip() if semantic_valid else "缺少 semantic review artifact"
+    diagnostic_triggers = build_diagnostic_trigger_facts(progress)
+    all_diagnostic_targets = aggregate_diagnostic_targets(diagnostic_triggers, max_targets=999)
+    diagnostic_targets = all_diagnostic_targets[:3]
+    review_debt_candidates = all_diagnostic_targets[3:]
+    session_result_summary = build_result_summary(
+        total=total,
+        attempted=attempted,
+        correct=correct,
+        diagnostic_triggers=diagnostic_triggers,
+        diagnostic_targets=diagnostic_targets,
+        review_targets=weaknesses,
+        should_review=should_review,
+        can_advance=can_advance,
+    )
 
     return {
         "topic": topic,
@@ -451,9 +479,10 @@ def summarize_test_progress(progress: dict[str, Any], questions_data: dict[str, 
         "status": session.get("status") or "active",
         "started_at": session.get("started_at"),
         "finished_at": session.get("finished_at"),
-        "total": total,
-        "attempted": attempted,
-        "correct": correct,
+        "total": session_result_summary["total"],
+        "attempted": session_result_summary["attempted"],
+        "correct": session_result_summary["correct"],
+        "result_summary": session_result_summary,
         "pending_review_count": len(pending_review_items),
         "pending_review_items": normalize_string_list(pending_review_titles),
         "overall": overall or None,
@@ -470,6 +499,9 @@ def summarize_test_progress(progress: dict[str, Any], questions_data: dict[str, 
         "next_actions": normalize_string_list(next_actions),
         "wrong_items": wrong_items,
         "solved_items": solved_items[:3],
+        "diagnostic_triggers": diagnostic_triggers,
+        "diagnostic_targets": diagnostic_targets,
+        "review_debt_candidates": review_debt_candidates,
         "mastery": mastery,
         "blocking_weaknesses": weaknesses[:2] if semantic_valid else [],
         "deferred_enhancement": normalize_string_list(semantic_review.get("deferred_enhancement") if semantic_valid else []),

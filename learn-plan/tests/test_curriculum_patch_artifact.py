@@ -9,7 +9,7 @@ SKILL_DIR = Path(__file__).resolve().parents[1]
 if str(SKILL_DIR) not in sys.path:
     sys.path.insert(0, str(SKILL_DIR))
 
-from learn_feedback.curriculum_patch import build_patch_proposal, pending_patch_items, update_patch_queue_file
+from learn_feedback.curriculum_patch import build_patch_proposal, patch_risk_policy, pending_patch_items, update_patch_queue_file
 
 
 class CurriculumPatchArtifactTest(unittest.TestCase):
@@ -93,6 +93,12 @@ class CurriculumPatchArtifactTest(unittest.TestCase):
         assert patch is not None
         self.assertEqual(patch.get("status"), "pending-evidence")
         self.assertEqual(patch.get("application_policy"), "pending-user-approval")
+
+    def test_patch_risk_policy_distinguishes_semiautomatic_and_confirmation_required_types(self) -> None:
+        self.assertEqual(patch_risk_policy("option_mapping_patch")["application_policy"], "semi-automatic")
+        self.assertEqual(patch_risk_policy("alias_patch")["risk_level"], "low")
+        self.assertEqual(patch_risk_policy("knowledge_node_patch")["application_policy"], "pending-user-approval")
+        self.assertEqual(patch_risk_policy("prerequisite_edge_patch")["risk_level"], "high")
 
 
 if __name__ == "__main__":

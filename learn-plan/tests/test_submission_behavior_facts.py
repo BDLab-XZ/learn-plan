@@ -8,7 +8,7 @@ SKILL_DIR = Path(__file__).resolve().parents[1]
 if str(SKILL_DIR) not in sys.path:
     sys.path.insert(0, str(SKILL_DIR))
 
-from learn_feedback.progress_summary import build_session_facts, build_submission_behavior_facts
+from learn_feedback.progress_summary import aggregate_diagnostic_targets, build_diagnostic_trigger_facts, build_result_summary, build_session_facts, build_submission_behavior_facts
 
 
 class SubmissionBehaviorFactsTest(unittest.TestCase):
@@ -88,6 +88,127 @@ class SubmissionBehaviorFactsTest(unittest.TestCase):
         self.assertTrue(by_id["persistent-failure"]["persistent_failure"])
         self.assertFalse(by_id["persistent-failure"]["ever_passed"])
         self.assertEqual(by_id["persistent-failure"]["last_failure_types"], ["hidden_wrong_answer"])
+
+    def _diagnostic_progress(self) -> dict[str, object]:
+        trigger_wrong = {
+            "trigger_type": "wrong_answer",
+            "question_id": "choice-assignment",
+            "question_type": "single_choice",
+            "option_index": 1,
+            "selected": True,
+            "is_correct_option": False,
+            "knowledge_point_ids": ["kp-assignment"],
+            "prerequisite_ids": ["kp-expression"],
+            "misconception_ids": ["mc-assignment-vs-equality"],
+            "capability_tags": ["python-assignment"],
+            "evidence": ["user selected option 1"],
+            "severity": "medium",
+            "requires_follow_up": True,
+            "diagnostic_mapping_status": "mapped",
+            "diagnostic_role": "distractor",
+            "mapping_confidence": 0.82,
+        }
+        trigger_uncertain = {
+            "trigger_type": "uncertain",
+            "question_id": "choice-assignment",
+            "question_type": "single_choice",
+            "option_index": 0,
+            "selected": False,
+            "is_correct_option": True,
+            "knowledge_point_ids": ["kp-assignment"],
+            "prerequisite_ids": [],
+            "misconception_ids": [],
+            "capability_tags": ["python-assignment"],
+            "evidence": ["user marked option 0 uncertain"],
+            "severity": "low",
+            "requires_follow_up": True,
+            "diagnostic_mapping_status": "mapped",
+            "mapping_confidence": 0.9,
+        }
+        return {
+            "topic": "Python",
+            "date": "2026-04-25",
+            "session": {"type": "today", "status": "completed"},
+            "summary": {"total": 1, "attempted": 1, "correct": 0},
+            "questions": {
+                "choice-assignment": {
+                    "stats": {
+                        "attempts": 1,
+                        "correct_count": 0,
+                        "last_status": "failed",
+                        "submit_history": [
+                            {
+                                "question_id": "choice-assignment",
+                                "question_type": "single_choice",
+                                "is_correct": False,
+                                "selected": [1],
+                                "unsure": [0],
+                                "diagnostic_triggers": [trigger_wrong, trigger_uncertain],
+                                "submitted_at": "2026-04-25T03:06:00Z",
+                            },
+                            {
+                                "question_id": "choice-assignment",
+                                "question_type": "single_choice",
+                                "is_correct": False,
+                                "selected": [1],
+                                "unsure": [0],
+                                "diagnostic_triggers": [trigger_wrong],
+                                "submitted_at": "2026-04-25T03:07:00Z",
+                            },
+                        ],
+                    }
+                }
+            },
+        }
+
+    def test_diagnostic_triggers_deduplicate_and_aggregate_by_knowledge_point(self) -> None:
+        triggers = build_diagnostic_trigger_facts(self._diagnostic_progress())
+
+        self.assertEqual(len(triggers), 2)
+        targets = aggregate_diagnostic_targets(triggers)
+        self.assertEqual(len(targets), 1)
+        target = targets[0]
+        self.assertEqual(target["knowledge_point_id"], "kp-assignment")
+        self.assertEqual(target["trigger_count"], 2)
+        self.assertEqual(target["trigger_types"], ["wrong_answer", "uncertain"])
+        self.assertEqual(target["source_questions"], ["choice-assignment"])
+        self.assertEqual(target["misconception_ids"], ["mc-assignment-vs-equality"])
+        self.assertTrue(target["requires_user_follow_up"])
+        self.assertIn("fragile_or_uncertain_understanding", target["candidate_diagnoses"])
+
+    def test_result_summary_separates_raw_score_from_uncertain_learning_signal(self) -> None:
+        trigger = {
+            "trigger_type": "uncertain",
+            "knowledge_point_ids": ["kp-assignment"],
+            "severity": "low",
+        }
+
+        summary = build_result_summary(total=1, attempted=1, correct=1, diagnostic_triggers=[trigger])
+
+        self.assertEqual(summary["raw_score"], {"correct": 1, "attempted": 1, "total": 1, "ratio": 1.0})
+        self.assertEqual(summary["learning_score"]["level"], "medium")
+        self.assertEqual(summary["learning_score"]["uncertain_count"], 1)
+        self.assertEqual(summary["review_recommendation"]["recommended_action"], "mixed_review_then_new")
+        self.assertEqual(summary["review_recommendation"]["targets"], [])
+
+    def test_session_facts_include_diagnostic_targets(self) -> None:
+        summary = {
+            "topic": "Python",
+            "date": "2026-04-25",
+            "session_type": "today",
+            "total": 1,
+            "attempted": 1,
+            "correct": 0,
+            "wrong_items": [],
+            "solved_items": [],
+            "mastery": {},
+        }
+
+        facts = build_session_facts(self._diagnostic_progress(), summary, session_dir=Path("/tmp/session"), update_type="today")
+
+        self.assertEqual(len(facts["diagnostic_triggers"]), 2)
+        self.assertEqual(facts["diagnostic_targets"][0]["knowledge_point_id"], "kp-assignment")
+        self.assertTrue(any("诊断目标：kp-assignment" in item for item in facts.get("evidence", [])))
 
     def test_session_facts_include_submission_behavior_without_advice(self) -> None:
         summary = {

@@ -200,6 +200,7 @@ def build_reflection_facts(progress: dict[str, Any], summary: dict[str, Any], se
         return {}
     judgement = reflection.get("mastery_judgement") if isinstance(reflection.get("mastery_judgement"), dict) else progress_judgement
     rounds = reflection.get("rounds") if isinstance(reflection.get("rounds"), list) else []
+    diagnoses = reflection.get("diagnoses") if isinstance(reflection.get("diagnoses"), list) else []
     return {
         "status": reflection.get("status") or ("recorded" if progress.get("reflection") else None),
         "trigger": reflection.get("trigger") if isinstance(reflection.get("trigger"), dict) else {},
@@ -213,6 +214,19 @@ def build_reflection_facts(progress: dict[str, Any], summary: dict[str, Any], se
                 "prompting_level": item.get("prompting_level"),
             }
             for item in rounds
+            if isinstance(item, dict)
+        ],
+        "diagnoses": [
+            {
+                "knowledge_point_id": item.get("knowledge_point_id"),
+                "diagnosis": item.get("diagnosis"),
+                "severity": item.get("severity"),
+                "confidence": item.get("confidence"),
+                "question_quality_guard": item.get("question_quality_guard"),
+                "rationale": item.get("rationale"),
+                "recommended_review": normalize_string_list(item.get("recommended_review")),
+            }
+            for item in diagnoses
             if isinstance(item, dict)
         ],
         "summary": progress.get("reflection") or summary.get("reflection"),
@@ -294,6 +308,153 @@ def build_agent_evidence_lines(
     return normalize_string_list(evidence)
 
 
+def build_raw_score(*, total: Any, attempted: Any, correct: Any) -> dict[str, Any]:
+    total_count = max(0, normalize_int(total))
+    attempted_count = max(0, normalize_int(attempted))
+    correct_count = max(0, normalize_int(correct))
+    denominator = attempted_count if attempted_count > 0 else total_count
+    ratio = round(correct_count / denominator, 4) if denominator > 0 else 0.0
+    return {
+        "correct": correct_count,
+        "attempted": attempted_count,
+        "total": total_count,
+        "ratio": ratio,
+    }
+
+
+def _diagnostic_trigger_counts(diagnostic_triggers: list[dict[str, Any]]) -> dict[str, int]:
+    wrong_types = {"wrong_answer", "code_failure", "sql_failure"}
+    wrong_count = 0
+    uncertain_count = 0
+    high_severity_count = 0
+    for trigger in diagnostic_triggers:
+        if not isinstance(trigger, dict):
+            continue
+        trigger_type = str(trigger.get("trigger_type") or "").strip()
+        if trigger_type in wrong_types:
+            wrong_count += 1
+        if trigger_type == "uncertain":
+            uncertain_count += 1
+        if str(trigger.get("severity") or "").strip() == "high":
+            high_severity_count += 1
+    return {
+        "wrong_count": wrong_count,
+        "uncertain_count": uncertain_count,
+        "high_severity_count": high_severity_count,
+    }
+
+
+def build_learning_score(
+    raw_score: dict[str, Any],
+    *,
+    diagnostic_triggers: list[dict[str, Any]] | None = None,
+    diagnostic_targets: list[dict[str, Any]] | None = None,
+    should_review: bool = False,
+) -> dict[str, Any]:
+    triggers = diagnostic_triggers if isinstance(diagnostic_triggers, list) else []
+    targets = diagnostic_targets if isinstance(diagnostic_targets, list) else []
+    counts = _diagnostic_trigger_counts(triggers)
+    ratio = float(raw_score.get("ratio") or 0.0)
+    attempted = normalize_int(raw_score.get("attempted"))
+    diagnostic_target_count = len(targets)
+    question_quality_guarded = any(isinstance(target, dict) and target.get("question_quality_concern") for target in targets)
+
+    if attempted <= 0:
+        level = "unknown"
+        rationale = "尚无提交记录，学习稳定度待观察。"
+    elif counts["high_severity_count"] > 0 or counts["wrong_count"] >= 2 or (attempted >= 3 and ratio < 0.5):
+        level = "low"
+        rationale = "存在高风险错误或客观正确率偏低，需要优先复习并追问确认。"
+    elif counts["wrong_count"] > 0 or ratio < 0.8:
+        level = "medium_low"
+        rationale = "已有错题或诊断目标，建议先针对相关知识点巩固。"
+    elif counts["uncertain_count"] > 0 or diagnostic_target_count > 0 or should_review:
+        level = "medium"
+        rationale = "客观结果尚可，但存在不确定项或复习信号，需要补充确认。"
+    else:
+        level = "high"
+        rationale = "客观正确率稳定，暂无额外诊断风险。"
+
+    if question_quality_guarded and level in {"low", "medium_low"}:
+        rationale = f"{rationale} 其中部分信号可能受题目质量或选项映射影响。"
+
+    return {
+        "level": level,
+        "ratio": ratio,
+        "uncertain_count": counts["uncertain_count"],
+        "wrong_count": counts["wrong_count"],
+        "diagnostic_target_count": diagnostic_target_count,
+        "rationale": rationale,
+    }
+
+
+def build_review_recommendation(
+    learning_score: dict[str, Any],
+    *,
+    diagnostic_targets: list[dict[str, Any]] | None = None,
+    review_targets: list[str] | None = None,
+    should_review: bool = False,
+    can_advance: bool = False,
+) -> dict[str, Any]:
+    targets: list[str] = []
+    for target in diagnostic_targets or []:
+        if not isinstance(target, dict):
+            continue
+        knowledge_id = str(target.get("knowledge_point_id") or "").strip()
+        if knowledge_id and knowledge_id != "unmapped" and knowledge_id not in targets:
+            targets.append(knowledge_id)
+    for target in normalize_string_list(review_targets or []):
+        if target not in targets:
+            targets.append(target)
+
+    level = str(learning_score.get("level") or "unknown")
+    if level == "low" or (should_review and not can_advance):
+        action = "review_first"
+        message = "建议先复习诊断目标，再推进新内容。"
+    elif level in {"medium", "medium_low"} or should_review:
+        action = "mixed_review_then_new"
+        message = "建议先用少量针对性复习确认薄弱点，再继续学习。"
+    else:
+        action = "proceed"
+        message = "可以继续推进新内容，并保留常规回顾。"
+
+    return {
+        "recommended_action": action,
+        "requires_user_confirmation": action != "proceed",
+        "targets": targets[:4],
+        "message": message,
+    }
+
+
+def build_result_summary(
+    *,
+    total: Any,
+    attempted: Any,
+    correct: Any,
+    diagnostic_triggers: list[dict[str, Any]] | None = None,
+    diagnostic_targets: list[dict[str, Any]] | None = None,
+    review_targets: list[str] | None = None,
+    should_review: bool = False,
+    can_advance: bool = False,
+) -> dict[str, Any]:
+    raw_score = build_raw_score(total=total, attempted=attempted, correct=correct)
+    learning_score = build_learning_score(raw_score, diagnostic_triggers=diagnostic_triggers, diagnostic_targets=diagnostic_targets, should_review=should_review)
+    return {
+        "total": raw_score["total"],
+        "attempted": raw_score["attempted"],
+        "correct": raw_score["correct"],
+        "raw_score": raw_score,
+        "learning_score": learning_score,
+        "review_recommendation": build_review_recommendation(
+            learning_score,
+            diagnostic_targets=diagnostic_targets,
+            review_targets=review_targets,
+            should_review=should_review,
+            can_advance=can_advance,
+        ),
+    }
+
+
 def build_session_facts(
     progress: dict[str, Any],
     summary: dict[str, Any],
@@ -305,6 +466,8 @@ def build_session_facts(
     mastery = summary.get("mastery") if isinstance(summary.get("mastery"), dict) else {}
     evidence = build_session_evidence(summary)
     code_failure_facts = build_code_failure_facts(progress, summary)
+    diagnostic_triggers = summary.get("diagnostic_triggers") if isinstance(summary.get("diagnostic_triggers"), list) else build_diagnostic_trigger_facts(progress)
+    diagnostic_targets = summary.get("diagnostic_targets") if isinstance(summary.get("diagnostic_targets"), list) else aggregate_diagnostic_targets(diagnostic_triggers)
     submission_behavior_facts = build_submission_behavior_facts(progress)
     coverage_ledger_facts = build_coverage_ledger_facts(progress, summary)
     difficulty_performance_facts = build_difficulty_performance_facts(progress)
@@ -316,6 +479,7 @@ def build_session_facts(
     user_feedback_facts = build_user_feedback_facts(progress)
     mastery_judgement_facts = build_mastery_judgement_facts(progress)
     evidence.extend(build_code_failure_evidence(code_failure_facts))
+    evidence.extend(build_diagnostic_trigger_evidence(diagnostic_targets))
     evidence.extend(build_submission_behavior_evidence(submission_behavior_facts))
     evidence.extend(build_difficulty_performance_evidence(difficulty_performance_facts))
     evidence.extend(
@@ -363,6 +527,10 @@ def build_session_facts(
     }
     if code_failure_facts:
         facts["code_failure_facts"] = code_failure_facts
+    if diagnostic_triggers:
+        facts["diagnostic_triggers"] = diagnostic_triggers
+    if diagnostic_targets:
+        facts["diagnostic_targets"] = diagnostic_targets
     if submission_behavior_facts:
         facts["submission_behavior_facts"] = submission_behavior_facts
     if coverage_ledger_facts:
@@ -539,7 +707,7 @@ def _normalize_submit_record(record: Any, qid: str) -> dict[str, Any] | None:
     all_passed = payload.get("all_passed")
     passed = payload.get("passed")
     status = str(payload.get("status") or "").strip()
-    success = bool(all_passed) or bool(passed) or status == "passed"
+    success = bool(all_passed) or bool(passed) or bool(payload.get("is_correct")) or status in {"passed", "correct"}
     failure_types = normalize_string_list(payload.get("failure_types"))
     if not failure_types and not success:
         if payload.get("error"):
@@ -552,8 +720,12 @@ def _normalize_submit_record(record: Any, qid: str) -> dict[str, Any] | None:
             failure_types = ["wrong_answer"]
     return {
         "question_id": str(payload.get("question_id") or qid),
+        "question_type": str(payload.get("question_type") or "").strip(),
         "submitted_at": payload.get("submitted_at") or record.get("submitted_at"),
         "passed": success,
+        "selected": [normalize_int(item) for item in payload.get("selected") or []],
+        "unsure": [normalize_int(item) for item in payload.get("unsure") or []],
+        "diagnostic_triggers": payload.get("diagnostic_triggers") if isinstance(payload.get("diagnostic_triggers"), list) else [],
         "failure_types": normalize_string_list(failure_types),
         "passed_public_count": normalize_int(payload.get("passed_public_count")),
         "total_public_count": normalize_int(payload.get("total_public_count")),
@@ -585,6 +757,157 @@ def _question_submit_records(qid: str, item: dict[str, Any]) -> list[dict[str, A
         key = str(record.get("submitted_at") or f"index-{index}")
         deduped[key] = record
     return sorted(deduped.values(), key=lambda record: str(record.get("submitted_at") or ""))
+
+
+def _trigger_source_key(trigger: dict[str, Any], fallback_qid: str) -> str:
+    return "|".join(
+        [
+            str(trigger.get("question_id") or fallback_qid),
+            str(trigger.get("trigger_type") or "unknown"),
+            str(trigger.get("option_index") if trigger.get("option_index") is not None else "case"),
+            ",".join(normalize_string_list(trigger.get("knowledge_point_ids"))) or "unmapped",
+        ]
+    )
+
+
+def build_diagnostic_trigger_facts(progress: dict[str, Any]) -> list[dict[str, Any]]:
+    facts: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    questions = progress.get("questions") if isinstance(progress.get("questions"), dict) else {}
+    for qid, item in questions.items():
+        if not isinstance(item, dict):
+            continue
+        for record in _question_submit_records(str(qid), item):
+            for index, trigger in enumerate(record.get("diagnostic_triggers") or []):
+                if not isinstance(trigger, dict):
+                    continue
+                key = _trigger_source_key(trigger, str(qid))
+                if key in seen:
+                    continue
+                seen.add(key)
+                knowledge_point_ids = normalize_string_list(trigger.get("knowledge_point_ids"))
+                mapping_status = str(trigger.get("diagnostic_mapping_status") or "mapped").strip() if knowledge_point_ids else "missing"
+                facts.append(
+                    {
+                        "trigger_type": str(trigger.get("trigger_type") or "unknown"),
+                        "question_id": str(trigger.get("question_id") or record.get("question_id") or qid),
+                        "question_type": str(trigger.get("question_type") or record.get("question_type") or "").strip(),
+                        "option_index": trigger.get("option_index"),
+                        "selected": trigger.get("selected"),
+                        "is_correct_option": trigger.get("is_correct_option"),
+                        "knowledge_point_ids": knowledge_point_ids,
+                        "prerequisite_ids": normalize_string_list(trigger.get("prerequisite_ids")),
+                        "misconception_ids": normalize_string_list(trigger.get("misconception_ids")),
+                        "capability_tags": normalize_string_list(trigger.get("capability_tags") or record.get("capability_tags")),
+                        "failure_types": normalize_string_list(trigger.get("failure_types") or record.get("failure_types")),
+                        "failed_case_count": normalize_int(trigger.get("failed_case_count")),
+                        "evidence": normalize_string_list(trigger.get("evidence")),
+                        "severity": str(trigger.get("severity") or "medium").strip(),
+                        "requires_follow_up": bool(trigger.get("requires_follow_up", True)),
+                        "diagnostic_mapping_status": mapping_status,
+                        "diagnostic_role": trigger.get("diagnostic_role"),
+                        "mapping_confidence": trigger.get("mapping_confidence"),
+                        "submitted_at": record.get("submitted_at"),
+                    }
+                )
+    return facts
+
+
+def _severity_score(value: Any) -> int:
+    return {"high": 3, "medium": 2, "low": 1}.get(str(value or "").strip(), 2)
+
+
+def aggregate_diagnostic_targets(triggers: list[dict[str, Any]], *, max_targets: int = 3) -> list[dict[str, Any]]:
+    grouped: dict[str, dict[str, Any]] = {}
+    for trigger in triggers:
+        if not isinstance(trigger, dict):
+            continue
+        knowledge_ids = normalize_string_list(trigger.get("knowledge_point_ids")) or ["unmapped"]
+        for knowledge_id in knowledge_ids:
+            target = grouped.setdefault(
+                knowledge_id,
+                {
+                    "knowledge_point_id": knowledge_id,
+                    "trigger_count": 0,
+                    "trigger_types": [],
+                    "source_questions": [],
+                    "candidate_diagnoses": [],
+                    "priority": "medium",
+                    "requires_user_follow_up": False,
+                    "mapping_confidence": 1.0,
+                    "mapping_status": "mapped" if knowledge_id != "unmapped" else "missing",
+                    "question_quality_concern": None,
+                    "capability_tags": [],
+                    "misconception_ids": [],
+                    "prerequisite_ids": [],
+                    "evidence": [],
+                    "_score": 0,
+                },
+            )
+            trigger_type = str(trigger.get("trigger_type") or "unknown")
+            if trigger_type not in target["trigger_types"]:
+                target["trigger_types"].append(trigger_type)
+            question_id = str(trigger.get("question_id") or "").strip()
+            if question_id and question_id not in target["source_questions"]:
+                target["source_questions"].append(question_id)
+            for field in ("capability_tags", "misconception_ids", "prerequisite_ids", "evidence"):
+                for value in normalize_string_list(trigger.get(field)):
+                    if value not in target[field]:
+                        target[field].append(value)
+            target["trigger_count"] += 1
+            target["requires_user_follow_up"] = bool(target["requires_user_follow_up"] or trigger.get("requires_follow_up"))
+            mapping_status = str(trigger.get("diagnostic_mapping_status") or "").strip()
+            if mapping_status == "missing" or knowledge_id == "unmapped":
+                target["mapping_status"] = "missing"
+                target["mapping_confidence"] = min(float(target["mapping_confidence"]), 0.35)
+            elif trigger.get("mapping_confidence") is not None:
+                try:
+                    target["mapping_confidence"] = min(float(target["mapping_confidence"]), float(trigger.get("mapping_confidence")))
+                except (TypeError, ValueError):
+                    target["mapping_confidence"] = min(float(target["mapping_confidence"]), 0.6)
+            if trigger.get("diagnostic_role") == "question_quality":
+                target["question_quality_concern"] = "option_mapping_or_question_quality"
+            diagnosis = {
+                "wrong_answer": "misconception_or_gap",
+                "uncertain": "fragile_or_uncertain_understanding",
+                "code_failure": "application_failure",
+                "sql_failure": "application_failure",
+            }.get(trigger_type, "needs_review")
+            if diagnosis not in target["candidate_diagnoses"]:
+                target["candidate_diagnoses"].append(diagnosis)
+            score = _severity_score(trigger.get("severity"))
+            if trigger_type in {"wrong_answer", "code_failure", "sql_failure"}:
+                score += 2
+            if trigger_type == "uncertain":
+                score += 1
+            if trigger.get("is_correct_option") is True and trigger_type == "wrong_answer":
+                score += 1
+            target["_score"] += score
+    results = []
+    for target in grouped.values():
+        score = normalize_int(target.get("_score"))
+        if score >= 7 or target.get("trigger_count", 0) >= 3:
+            target["priority"] = "high"
+        elif score <= 2:
+            target["priority"] = "low"
+        target["follow_up_prompt"] = f"请解释你对 {target['knowledge_point_id']} 的理解，并说明刚才错选或不确定的原因。"
+        target.pop("_score", None)
+        for field in ("source_questions", "capability_tags", "misconception_ids", "prerequisite_ids", "evidence"):
+            target[field] = normalize_string_list(target.get(field))[:8]
+        results.append(target)
+    return sorted(results, key=lambda item: ({"high": 0, "medium": 1, "low": 2}.get(str(item.get("priority")), 1), -normalize_int(item.get("trigger_count")), str(item.get("knowledge_point_id"))))[:max_targets]
+
+
+def build_diagnostic_trigger_evidence(diagnostic_targets: list[dict[str, Any]]) -> list[str]:
+    evidence: list[str] = []
+    for target in diagnostic_targets:
+        if not isinstance(target, dict):
+            continue
+        knowledge_id = str(target.get("knowledge_point_id") or "unmapped").strip()
+        trigger_types = ",".join(normalize_string_list(target.get("trigger_types"))) or "triggered"
+        priority = str(target.get("priority") or "medium").strip()
+        evidence.append(f"诊断目标：{knowledge_id}，priority={priority}，triggers={trigger_types}，count={normalize_int(target.get('trigger_count'))}")
+    return normalize_string_list(evidence)
 
 
 def build_submission_behavior_facts(progress: dict[str, Any]) -> list[dict[str, Any]]:
@@ -773,6 +1096,12 @@ __all__ = [
     "build_user_feedback_facts",
     "build_mastery_judgement_facts",
     "build_submission_behavior_facts",
+    "build_diagnostic_trigger_facts",
+    "aggregate_diagnostic_targets",
+    "build_raw_score",
+    "build_learning_score",
+    "build_review_recommendation",
+    "build_result_summary",
     "build_coverage_ledger_facts",
     "build_difficulty_performance_facts",
 ]

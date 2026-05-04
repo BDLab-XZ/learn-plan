@@ -246,6 +246,12 @@ function resultToRecord(questionId: string, action: SubmitRecord['action'], resu
     testCases,
     runCases,
     failure_types: result.failure_types,
+    selected: result.selected,
+    unsure: result.unsure,
+    diagnostic_triggers: result.diagnostic_triggers,
+    raw_score: result.raw_score,
+    learning_score: result.learning_score,
+    review_recommendation: result.review_recommendation,
   }
   return {
     ...record,
@@ -303,6 +309,58 @@ function buildDifficultySummary(): DifficultySummary {
     summary.by_category[category][level].correct += correct ? 1 : 0
   }
   return summary
+}
+
+function buildRawScore(total: number, attempted: number, correct: number) {
+  const denominator = attempted > 0 ? attempted : total
+  return {
+    correct,
+    attempted,
+    total,
+    ratio: denominator > 0 ? Number((correct / denominator).toFixed(4)) : 0,
+  }
+}
+
+function buildLearningScore(rawScore: ReturnType<typeof buildRawScore>, latestRecords: SubmitRecord[]) {
+  const triggers = latestRecords.flatMap((record) => record.diagnostic_triggers || [])
+  const wrongCount = triggers.filter((trigger) => ['wrong_answer', 'code_failure', 'sql_failure'].includes(String(trigger.trigger_type))).length
+  const uncertainCount = triggers.filter((trigger) => trigger.trigger_type === 'uncertain').length
+  const highSeverityCount = triggers.filter((trigger) => trigger.severity === 'high').length
+  const targetCount = new Set(triggers.flatMap((trigger) => trigger.knowledge_point_ids || [])).size
+  let level = 'high'
+  let rationale = '客观正确率稳定，暂无额外诊断风险。'
+  if (rawScore.attempted <= 0) {
+    level = 'unknown'
+    rationale = '尚无提交记录，学习稳定度待观察。'
+  } else if (highSeverityCount > 0 || wrongCount >= 2 || (rawScore.attempted >= 3 && rawScore.ratio < 0.5)) {
+    level = 'low'
+    rationale = '存在高风险错误或客观正确率偏低，需要优先复习并追问确认。'
+  } else if (wrongCount > 0 || rawScore.ratio < 0.8) {
+    level = 'medium_low'
+    rationale = '已有错题或诊断目标，建议先针对相关知识点巩固。'
+  } else if (uncertainCount > 0 || targetCount > 0) {
+    level = 'medium'
+    rationale = '客观结果尚可，但存在不确定项，需要补充确认。'
+  }
+  return {
+    level,
+    ratio: rawScore.ratio,
+    uncertain_count: uncertainCount,
+    wrong_count: wrongCount,
+    diagnostic_target_count: targetCount,
+    rationale,
+  }
+}
+
+function buildReviewRecommendation(learningScore: ReturnType<typeof buildLearningScore>, latestRecords: SubmitRecord[]) {
+  const targets = Array.from(new Set(latestRecords.flatMap((record) => record.diagnostic_triggers || []).flatMap((trigger) => trigger.knowledge_point_ids || []))).slice(0, 4)
+  if (learningScore.level === 'low') {
+    return { recommended_action: 'review_first', requires_user_confirmation: true, targets, message: '建议先复习诊断目标，再推进新内容。' }
+  }
+  if (learningScore.level === 'medium' || learningScore.level === 'medium_low') {
+    return { recommended_action: 'mixed_review_then_new', requires_user_confirmation: true, targets, message: '建议先用少量针对性复习确认薄弱点，再继续学习。' }
+  }
+  return { recommended_action: 'proceed', requires_user_confirmation: false, targets, message: '可以继续推进新内容，并保留常规回顾。' }
 }
 
 function syncQuestionDifficultySnapshot(question: RuntimeQuestion) {
@@ -389,11 +447,22 @@ async function persistProgress() {
   const questions = Object.values(state.progress.questions || {})
   const attempted = questions.filter((item) => (item.stats?.attempts || 0) > 0).length
   const correct = questions.filter((item) => item.stats?.last_status === 'passed' || item.stats?.last_status === 'correct').length
+  const latestSubmitRecords = questions.map((item) => item.history?.[item.history.length - 1]).filter((item): item is SubmitRecord => Boolean(item && item.action === 'submit'))
+  const rawScore = buildRawScore(state.rawQuestions.length, attempted, correct)
+  const learningScore = buildLearningScore(rawScore, latestSubmitRecords)
   state.progress.summary = {
     ...(state.progress.summary || {}),
     total: state.rawQuestions.length,
     attempted,
     correct,
+  }
+  state.progress.result_summary = {
+    total: rawScore.total,
+    attempted: rawScore.attempted,
+    correct: rawScore.correct,
+    raw_score: rawScore,
+    learning_score: learningScore,
+    review_recommendation: buildReviewRecommendation(learningScore, latestSubmitRecords),
   }
   for (const question of state.rawQuestions) syncQuestionDifficultySnapshot(question)
   state.progress.difficulty_summary = buildDifficultySummary()
