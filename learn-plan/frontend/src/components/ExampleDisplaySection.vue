@@ -1,12 +1,15 @@
 <script setup lang="ts">
-import type { RuntimeExampleDisplay, DatasetTableDescription } from '../types'
+import { computed } from 'vue'
+import type { RuntimeExampleDisplay, DatasetTableDescription, DemoExample } from '../types'
 import DisplayValueView from './DisplayValueView.vue'
 
 const props = defineProps<{
   examples?: RuntimeExampleDisplay[]
+  plainExamples?: DemoExample[]
 }>()
 
 const MAX_CELL_CHARS = 160
+const hasExamples = computed(() => Boolean(props.examples?.length || props.plainExamples?.length))
 
 function formatCell(value: unknown): string {
   if (value === undefined || value === null) return ''
@@ -17,14 +20,26 @@ function formatCell(value: unknown): string {
 function visibleTables(example: RuntimeExampleDisplay): DatasetTableDescription[] {
   return example.input_tables || []
 }
+
+function plainExampleAt(index: number): DemoExample | undefined {
+  return props.plainExamples?.[index]
+}
+
+function inputFallback(index: number): string {
+  return plainExampleAt(index)?.inputCode || '（无输入）'
+}
+
+function outputFallback(index: number): string {
+  return plainExampleAt(index)?.outputCode || '（无输出）'
+}
 </script>
 
 <template>
-  <article v-if="props.examples?.length" class="statement-card compact example-display-section">
+  <article v-if="hasExamples" class="statement-card compact example-display-section">
     <p class="eyebrow">Examples</p>
     <h3>示例</h3>
-    <div class="example-list">
-      <section v-for="example in props.examples" :key="example.title" class="example-card polished">
+    <div v-if="props.examples?.length" class="example-list">
+      <section v-for="(example, exampleIndex) in props.examples" :key="example.title" class="example-card polished">
         <header class="example-card-header">
           <span>{{ example.title }}</span>
         </header>
@@ -52,20 +67,41 @@ function visibleTables(example: RuntimeExampleDisplay): DatasetTableDescription[
                 </div>
               </section>
             </div>
-            <dl v-else class="example-parameter-list">
+            <dl v-else-if="example.input_parameters?.length" class="example-parameter-list">
               <div v-for="parameter in example.input_parameters" :key="parameter.name" class="example-parameter-row">
                 <dt>{{ parameter.name }}</dt>
                 <dd><DisplayValueView :value="parameter.valueDisplay" /></dd>
               </div>
             </dl>
+            <pre v-else>{{ inputFallback(exampleIndex) }}</pre>
           </div>
 
           <div class="example-io-block output-block polished">
             <strong>示例输出</strong>
-            <DisplayValueView :value="example.outputDisplay" />
+            <DisplayValueView :value="example.outputDisplay" :fallback="outputFallback(exampleIndex)" />
           </div>
         </div>
 
+        <div v-if="example.explanation" class="rich-text example-explanation">
+          {{ example.explanation }}
+        </div>
+      </section>
+    </div>
+    <div v-else class="example-list">
+      <section v-for="example in props.plainExamples" :key="example.title" class="example-card polished">
+        <header class="example-card-header">
+          <span>{{ example.title }}</span>
+        </header>
+        <div class="example-io-grid polished">
+          <div class="example-io-block input-block polished">
+            <strong>示例输入</strong>
+            <pre>{{ example.inputCode || '（无输入）' }}</pre>
+          </div>
+          <div class="example-io-block output-block polished">
+            <strong>示例输出</strong>
+            <pre>{{ example.outputCode || '（无输出）' }}</pre>
+          </div>
+        </div>
         <div v-if="example.explanation" class="rich-text example-explanation">
           {{ example.explanation }}
         </div>

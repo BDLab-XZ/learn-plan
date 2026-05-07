@@ -28,6 +28,15 @@ class RuntimeFrontendSubmitHistoryTest(unittest.TestCase):
         self.assertIn("stats.last_submit_result = submitResult", store_source)
         self.assertIn("stats.submit_history.push(submitResult)", store_source)
 
+    def test_code_submit_merges_public_and_hidden_failed_case_summaries(self) -> None:
+        store_source = STORE_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("function mergeCaseSummaries", store_source)
+        self.assertIn("result.case_summaries", store_source)
+        self.assertIn("result.failed_case_summaries", store_source)
+        self.assertIn("summaries.push(failedCase)", store_source)
+        self.assertIn("mergeCaseSummaries(result).map(mapCaseSummary)", store_source)
+
 
 if __name__ == "__main__":
     unittest.main()

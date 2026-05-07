@@ -1235,7 +1235,8 @@ class Handler(BaseHTTPRequestHandler):
                 "stderr": result.get("stderr", ""),
                 "traceback": result.get("traceback", ""),
             }
-            case_summaries.append(summary)
+            if category != "hidden":
+                case_summaries.append(summary)
             if passed:
                 passed_count += 1
                 if category == "hidden":
@@ -1255,7 +1256,7 @@ class Handler(BaseHTTPRequestHandler):
             "total_public_count": total_public_count,
             "passed_hidden_count": passed_hidden_count,
             "total_hidden_count": total_hidden_count,
-            "case_summaries": failed_case_summaries,
+            "case_summaries": case_summaries,
             "failed_case_summaries": failed_case_summaries,
             "failure_types": failure_types,
             "results": failed_case_summaries,

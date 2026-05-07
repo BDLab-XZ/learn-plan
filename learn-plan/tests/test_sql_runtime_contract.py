@@ -75,10 +75,11 @@ class SqlRuntimeContractTest(unittest.TestCase):
         self.assertEqual(result["total_hidden_count"], 1)
         summary = result["failed_case_summaries"][0]
         self.assertEqual(summary["category"], "hidden")
-        self.assertNotIn("input", summary)
-        self.assertNotIn("expected_repr", summary)
-        self.assertNotIn("actual_repr", summary)
-        self.assertNotIn("expected_hidden", repr(result))
+        self.assertIn("input", summary)
+        self.assertIn("expected_repr", summary)
+        self.assertIn("actual_repr", summary)
+        self.assertIn("expectedDisplay", summary)
+        self.assertIn("actualDisplay", summary)
 
     def test_bootstrap_copies_runtime_support_modules(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

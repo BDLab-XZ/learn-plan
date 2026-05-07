@@ -170,6 +170,23 @@ function buildPassedCases(result: SubmitResult): TestCaseRecord[] {
   }))
 }
 
+function caseSummaryKey(testCase: FailedCaseSummary, index: number): string {
+  return `${testCase.category || 'public'}:${testCase.case ?? index}`
+}
+
+function mergeCaseSummaries(result: SubmitResult): FailedCaseSummary[] {
+  const summaries = [...(result.case_summaries || [])]
+  const seen = new Set(summaries.map(caseSummaryKey))
+  for (const [index, failedCase] of (result.failed_case_summaries || []).entries()) {
+    const key = caseSummaryKey(failedCase, index)
+    if (!seen.has(key)) {
+      summaries.push(failedCase)
+      seen.add(key)
+    }
+  }
+  return summaries
+}
+
 function mapRunCases(result: SubmitResult, publicTests?: RuntimeTestCase[]): RunCaseRecord[] {
   return (result.run_cases || []).map((item, index) => {
     const expected = item.expectedDisplay || item.expected_repr || item.expected || publicTests?.[index]?.expected
@@ -224,10 +241,9 @@ function buildTerminalOutput(record: Pick<SubmitRecord, 'action' | 'message' | '
 }
 
 function resultToRecord(questionId: string, action: SubmitRecord['action'], result: SubmitResult, publicTests?: RuntimeTestCase[]): SubmitRecord {
-  const allCases = (result.case_summaries || []).map(mapCaseSummary)
-  const failed = (result.failed_case_summaries || []).map(mapCaseSummary)
+  const allCases = mergeCaseSummaries(result).map(mapCaseSummary)
   const passed = allCases.length ? [] : buildPassedCases(result)
-  const testCases = allCases.length ? allCases : [...passed, ...failed]
+  const testCases = allCases.length ? allCases : passed
   const runCases = mapRunCases(result, publicTests)
   const ok = result.all_passed ?? result.is_correct ?? (runCases.length ? runCases.every((item) => item.passed !== false && !item.error) : result.ok ?? !result.error)
   const totalPublic = result.total_public_count ?? 0

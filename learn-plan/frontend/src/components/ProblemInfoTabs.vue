@@ -82,7 +82,7 @@ const exampleItems = computed(() => props.question.exampleDisplays || [])
           <div class="rich-text" v-html="calculationSpecHtml" />
         </article>
 
-        <ExampleDisplaySection :examples="exampleItems" />
+        <ExampleDisplaySection :examples="exampleItems" :plain-examples="props.question.examples" />
       </div>
       <SubmitHistory v-else-if="props.mode === 'history'" :records="props.records" />
       <StatusPanel v-else :question="props.question" :records="props.records" />

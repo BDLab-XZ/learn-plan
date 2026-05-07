@@ -159,6 +159,7 @@ def submit_sql(question: dict[str, Any], sql: str, runtime_context: dict[str, An
     cases = _question_cases(question, runtime_context, visibility="all")
     if not cases:
         cases = [{"case_id": "submit", "category": "public", "parameters": {}}]
+    case_summaries: list[dict[str, Any]] = []
     failed_case_summaries: list[dict[str, Any]] = []
     failure_types: list[str] = []
     passed_count = 0
@@ -189,8 +190,10 @@ def submit_sql(question: dict[str, Any], sql: str, runtime_context: dict[str, An
                 total_hidden_count += 1
             else:
                 total_public_count += 1
-            result = _run_sql_case(connection, question, case, sql, runtime_context, include_private=category != "hidden")
+            result = _run_sql_case(connection, question, case, sql, runtime_context, include_private=True)
             passed = bool(result.get("passed")) and not result.get("error")
+            if category != "hidden":
+                case_summaries.append(_public_case_summary(index + 1, category, passed, result, case))
             if passed:
                 passed_count += 1
                 if category == "hidden":
@@ -213,6 +216,7 @@ def submit_sql(question: dict[str, Any], sql: str, runtime_context: dict[str, An
         "total_public_count": total_public_count,
         "passed_hidden_count": passed_hidden_count,
         "total_hidden_count": total_hidden_count,
+        "case_summaries": case_summaries,
         "failed_case_summaries": failed_case_summaries,
         "failure_types": failure_types,
         "results": failed_case_summaries,
@@ -442,25 +446,34 @@ def _safe_failure_type(error: str, category: str) -> str:
     return error
 
 
+def _public_case_summary(case_number: int, category: str, passed: bool, result: dict[str, Any], case: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "case": case_number,
+        "category": category,
+        "passed": passed,
+        "error": "" if passed else str(result.get("error") or "wrong_answer"),
+        "capability_tags": case.get("capability_tags", []) if isinstance(case.get("capability_tags"), list) else [],
+        "input": result.get("input"),
+        "expected_repr": result.get("expected_repr", ""),
+        "actual_repr": result.get("actual_repr", ""),
+        "expectedDisplay": result.get("expectedDisplay"),
+        "actualDisplay": result.get("actualDisplay"),
+    }
+
+
 def _failed_case_summary(case_number: int, category: str, error: str, result: dict[str, Any], case: dict[str, Any]) -> dict[str, Any]:
-    summary = {
+    return {
         "case": case_number,
         "category": category,
         "passed": False,
         "error": error,
         "capability_tags": case.get("capability_tags", []) if isinstance(case.get("capability_tags"), list) else [],
+        "input": result.get("input"),
+        "expected_repr": result.get("expected_repr", ""),
+        "actual_repr": result.get("actual_repr", ""),
+        "expectedDisplay": result.get("expectedDisplay"),
+        "actualDisplay": result.get("actualDisplay"),
     }
-    if category != "hidden":
-        summary.update(
-            {
-                "input": result.get("input"),
-                "expected_repr": result.get("expected_repr", ""),
-                "actual_repr": result.get("actual_repr", ""),
-                "expectedDisplay": result.get("expectedDisplay"),
-                "actualDisplay": result.get("actualDisplay"),
-            }
-        )
-    return summary
 
 
 def _table_mapping(question: dict[str, Any], case: dict[str, Any], runtime_context: dict[str, Any] | None) -> dict[str, str]:
